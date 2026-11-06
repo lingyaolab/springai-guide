@@ -1,0 +1,108 @@
+.github/workflows/deploy-pages.yml
+  h_000d6d73c03ff5 1-55
+.gitignore
+  h_000d6d73c03ff5 1-12
+CHANGELOG.md
+  h_000d6d73c03ff5 1-106
+DEPLOY.md
+  h_000d6d73c03ff5 1-117
+README.md
+  h_000d6d73c03ff5 1-46
+index.html
+  h_000d6d73c03ff5 1-52
+spring-ai-learn/.nojekyll
+  h_000d6d73c03ff5 1
+spring-ai-learn/404.html
+  h_000d6d73c03ff5 1-124
+spring-ai-learn/appendix/api-cheatsheet.html
+  h_000d6d73c03ff5 1-432
+spring-ai-learn/appendix/errors.html
+  h_000d6d73c03ff5 1-299
+spring-ai-learn/appendix/glossary.html
+  h_000d6d73c03ff5 1-450
+spring-ai-learn/appendix/migration.html
+  h_000d6d73c03ff5 1-344
+spring-ai-learn/appendix/source-map.html
+  h_000d6d73c03ff5 1-334
+spring-ai-learn/assets/base.css
+  h_000d6d73c03ff5 1-1624
+spring-ai-learn/assets/diagrams.css
+  h_000d6d73c03ff5 1-190
+spring-ai-learn/assets/favicon.svg
+  h_000d6d73c03ff5 1-5
+spring-ai-learn/assets/mini-highlight.js
+  h_000d6d73c03ff5 1-250
+spring-ai-learn/assets/nav.js
+  h_000d6d73c03ff5 1-581
+spring-ai-learn/assets/search-index-01.js
+  h_000d6d73c03ff5 1-3
+spring-ai-learn/assets/search-index-02.js
+  h_000d6d73c03ff5 1-3
+spring-ai-learn/assets/search-index-03.js
+  h_000d6d73c03ff5 1-3
+spring-ai-learn/assets/search-index-04.js
+  h_000d6d73c03ff5 1-3
+spring-ai-learn/assets/search-index-05.js
+  h_000d6d73c03ff5 1-3
+spring-ai-learn/assets/search-index-06.js
+  h_000d6d73c03ff5 1-3
+spring-ai-learn/assets/search-index.js
+  h_000d6d73c03ff5 1-2
+spring-ai-learn/assets/site.js
+  h_000d6d73c03ff5 1-1946
+spring-ai-learn/chapters/00-study-map.html
+  h_000d6d73c03ff5 1-311
+spring-ai-learn/chapters/01-setup.html
+  h_000d6d73c03ff5 1-519
+spring-ai-learn/chapters/02-chatclient.html
+  h_000d6d73c03ff5 1-535
+spring-ai-learn/chapters/03-prompt-structured-output.html
+  h_000d6d73c03ff5 1-476
+spring-ai-learn/chapters/04-streaming-sse.html
+  h_000d6d73c03ff5 1-439
+spring-ai-learn/chapters/05-chat-memory.html
+  h_000d6d73c03ff5 1-512
+spring-ai-learn/chapters/06-advisors.html
+  h_000d6d73c03ff5 1-452
+spring-ai-learn/chapters/07-rag-overview.html
+  h_000d6d73c03ff5 1-476
+spring-ai-learn/chapters/08-vector-store.html
+  h_000d6d73c03ff5 1-437
+spring-ai-learn/chapters/09-advanced-retrieval.html
+  h_000d6d73c03ff5 1-424
+spring-ai-learn/chapters/10-tool-calling.html
+  h_000d6d73c03ff5 1-513
+spring-ai-learn/chapters/11-mcp-client.html
+  h_000d6d73c03ff5 1-435
+spring-ai-learn/chapters/12-mcp-server.html
+  h_000d6d73c03ff5 1-425
+spring-ai-learn/chapters/13-observability-testing.html
+  h_000d6d73c03ff5 1-467
+spring-ai-learn/chapters/14-production.html
+  h_000d6d73c03ff5 1-430
+spring-ai-learn/chapters/15-capstone.html
+  h_000d6d73c03ff5 1-430
+spring-ai-learn/chapters/16-evaluation.html
+  h_000d6d73c03ff5 1-581
+spring-ai-learn/index.html
+  h_000d6d73c03ff5 1-226
+spring-ai-learn/robots.txt
+  h_000d6d73c03ff5 1-2
+tools/build-search-index.cjs
+  h_000d6d73c03ff5 1-209
+tools/check-site.cjs
+  h_000d6d73c03ff5 1-254
+tools/check-sources.cjs
+  h_000d6d73c03ff5 1-270
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "66a0a46eaba3ecad94923c3fb77db5f655e5fdd8",
+  "prompts": {},
+  "humans": {
+    "h_000d6d73c03ff5": {
+      "author": "lingyao <lingyao@tianmagroup.com>"
+    }
+  }
+}
