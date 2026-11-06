@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 多轮记忆：ChatMemory 与 ChatMemoryRepository 的分工、MessageWindowChatMemory 的裁剪算法、MessageChatMemoryAdvisor 的 before/after、JDBC 与 Redis 存法与配置。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="05 多轮记忆：ChatMemory 的三种存法 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="ChatMemory 与 Repository 的分工、窗口裁剪算法、Advisor 的 before/after、JDBC 与 Redis 存法。" />
+    <title>05 多轮记忆：ChatMemory 的三种存法 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="05-chat-memory" data-root="..">
+    <main>
+      <article class="article">
+        <h1>05 · 多轮记忆</h1>
+        <p class="lede">
+          「让模型记住上一轮」听起来像加个参数，实际要回答三个问题：<strong>存什么</strong>、<strong>存哪</strong>、
+          <strong>什么时候塞回上下文</strong>。Spring AI 把这三件事拆成 <code>ChatMemory</code>（策略）、
+          <code>ChatMemoryRepository</code>（存储）、<code>MessageChatMemoryAdvisor</code>（时机）三层。
+          这一章把三层逐个拆开。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>说清 <code>ChatMemory</code> 与 <code>ChatMemoryRepository</code> 各自负责什么，为什么不能合成一个接口</li>
+          <li>解释 <code>MessageWindowChatMemory</code> 的裁剪算法：为什么它总是从一条 user 消息开始保留</li>
+          <li>用 <code>MessageChatMemoryAdvisor</code> + <code>conversationId</code> 跑通两轮对话，并知道消息在什么时候被写入</li>
+          <li>在内存 / JDBC / Redis 三种存储之间做选择，并写对 2.0.2 的配置前缀</li>
+        </ul>
+
+        <h2 id="why">先说为什么：记忆是「策略 + 存储」两件事</h2>
+        <p>
+          如果只有一个 <code>ChatMemory</code> 接口，你会被迫在「怎么裁剪」和「存到哪」之间二选一：
+          换数据库要重写裁剪逻辑，改窗口大小又要动存储代码。Spring AI 把它拆成两半：
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">ChatMemory（策略：留多少、怎么拼）</span>
+            <div class="ld">
+              唯一的内置实现是 <code>MessageWindowChatMemory</code>：决定窗口大小、系统消息怎么保留、超限先删谁。
+              <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/MessageWindowChatMemory.java:43">MessageWindowChatMemory.java:43</span>
+            </div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">ChatMemoryRepository（存储：读写消息列表）</span>
+            <div class="ld">
+              只有四个方法：列出会话、按会话读、按会话整段覆盖写、按会话删。
+              <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/ChatMemoryRepository.java:29">ChatMemoryRepository.java:29</span>
+            </div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">MessageChatMemoryAdvisor（时机：读历史 / 写新消息）</span>
+            <div class="ld">
+              在调用模型前把历史拼进 prompt，在返回后把 assistant 消息写回记忆。
+              <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/MessageChatMemoryAdvisor.java:74">MessageChatMemoryAdvisor.java:74</span>
+            </div>
+          </div>
+        </div>
+        <div class="callout">
+          <span class="ct">为什么要拆成「策略 + 存储」</span>
+          <p>
+            因为两者变化频率不同：窗口大小是产品决策（20 条还是 50 条），存储是部署决策（单机内存还是 Redis）。
+            拆开之后，换 Redis 不需要改裁剪逻辑，改窗口也不需要动存储实现。
+          </p>
+        </div>
+
+        <h2 id="minimal">最小可跑：两轮对话记住名字</h2>
+        <p>01 章的 starter 已经带来了 <code>ChatMemory</code> 自动装配，只需要把 Advisor 挂上：</p>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/ChatConfig.java">package com.example.demo;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+class ChatConfig {
+
+    @Bean
+    ChatClient chatClient(ChatClient.Builder builder, ChatMemory chatMemory) {
+        return builder
+                .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
+                .build();
+    }
+}</pre>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/ChatService.java">package com.example.demo;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.stereotype.Service;
+
+@Service
+class ChatService {
+
+    private final ChatClient chatClient;
+
+    ChatService(ChatClient chatClient) {
+        this.chatClient = chatClient;
+    }
+
+    String chat(String conversationId, String question) {
+        return this.chatClient.prompt()
+                .user(question)
+                .advisors(a -&gt; a.param(ChatMemory.CONVERSATION_ID, conversationId))
+                .call()
+                .content();
+    }
+}</pre>
+        <pre data-lang="java" data-file="验证">String id = "user-42";
+System.out.println(service.chat(id, "我叫小林，记住这个名字"));
+System.out.println(service.chat(id, "我刚才说我叫什么？"));
+
+System.out.println(service.chat("user-99", "我刚才说我叫什么？")); // 另一个会话，应该不知道</pre>
+        <p>
+          同一个 <code>conversationId</code> 共享一份历史，不同的 ID 完全隔离。会话 ID 由你决定怎么拼——
+          常见的是 <code>userId + ":" + sessionId</code>，这样同一个用户可以有多个互不干扰的对话。
+        </p>
+
+        <h2 id="window">窗口算法：20 条上限背后有三个细节</h2>
+        <p>
+          <code>MessageWindowChatMemory</code> 默认最多保留 20 条消息。但它的裁剪不是简单的「从头删」，
+          而是有三条明确规则：
+        </p>
+        <div class="steps">
+          <li>
+            <span class="sh">① 新的 SystemMessage 会顶掉旧的</span>
+            <div>
+              如果本次新增的消息里包含 SystemMessage，旧的 SystemMessage 会先被清掉，避免多条互相矛盾的 system 指令
+              同时存在。<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/MessageWindowChatMemory.java:89">MessageWindowChatMemory.java:89</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">② 系统消息永远不参与淘汰</span>
+            <div>
+              计算要删多少条时，只统计非 system 消息；即使窗口满了，system 消息也会保留。
+              <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/MessageWindowChatMemory.java:101">MessageWindowChatMemory.java:101</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">③ 裁剪点会向后对齐到一条 user 消息</span>
+            <div>
+              按数量算出的切点如果落在 assistant 或 tool 消息上，会继续往后找，直到遇到 user 消息。
+              这样保留下来的窗口总是从「完整的一轮」开始，不会出现「有回答却没有提问」的上下文。
+              <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/MessageWindowChatMemory.java:116">MessageWindowChatMemory.java:116</span>
+            </div>
+          </li>
+        </div>
+        <div class="callout tip">
+          <span class="ct">这条对齐规则为什么重要</span>
+          <p>
+            如果没有它，窗口边界可能切在「assistant 回答」后面，模型看到的第一条消息是一句没有上下文的回答，
+            容易顺着错误的方向续写。对齐到 user 消息，等于强制「按轮」保留。
+          </p>
+        </div>
+        <pre data-lang="java" data-file="自己控制窗口大小">@Bean
+ChatMemory chatMemory(ChatMemoryRepository repository) {
+    return MessageWindowChatMemory.builder()
+            .chatMemoryRepository(repository)
+            .maxMessages(10)   // 必须 > 0
+            .build();
+}</pre>
+        <p class="src-line">
+          默认窗口 20<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/MessageWindowChatMemory.java:45">MessageWindowChatMemory.java:45</span>；
+          <code>maxMessages</code> 必须大于 0，否则构造时断言失败<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/MessageWindowChatMemory.java:53">MessageWindowChatMemory.java:53</span>。
+        </p>
+
+        <h2 id="advisor">Advisor 到底在前后做了什么</h2>
+        <p>
+          <code>MessageChatMemoryAdvisor</code> 的默认 order 是 <code>HIGHEST_PRECEDENCE + 200</code>，
+          比工具 Advisor 更靠外，所以它看到的是「工具循环已经结束」的最终消息。
+        </p>
+        <div class="compare">
+          <div class="col">
+            <h4>before：拼历史 + 立刻写 user 消息</h4>
+            <ul>
+              <li>按 conversationId 读出历史</li>
+              <li>如果 prompt 里已经包含这段历史（例如你手动传了 <code>.messages(...)</code>），不再重复插入</li>
+              <li>把 SystemMessage 移到最前面</li>
+              <li><strong>把本轮 user 消息先写进记忆</strong>，然后才调用模型</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4>after：写 assistant 消息</h4>
+            <ul>
+              <li>取本次响应的所有 generation</li>
+              <li>作为 assistant 消息写回同一个 conversationId</li>
+              <li>返回原始响应，不改内容</li>
+            </ul>
+          </div>
+        </div>
+        <pre data-lang="java" data-file="MessageChatMemoryAdvisor 的关键顺序">// before
+List&lt;Message&gt; memoryMessages = this.chatMemory.get(conversationId);
+// ...拼成 processedMessages，system 置顶...
+Message userMessage = processedChatClientRequest.prompt().getLastUserOrToolResponseMessage();
+this.chatMemory.add(conversationId, userMessage);   // 先写 user
+
+// after
+this.chatMemory.add(this.getConversationId(response.context()), assistantMessages);</pre>
+        <p class="src-line">
+          默认 order<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/api/Advisor.java:39">Advisor.java:39</span>；
+          before 与去重<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/MessageChatMemoryAdvisor.java:78">MessageChatMemoryAdvisor.java:78</span>；
+          after 写回<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/MessageChatMemoryAdvisor.java:137">MessageChatMemoryAdvisor.java:137</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">这个顺序带来一个副作用</span>
+          <p>
+            user 消息在<strong>调用模型之前</strong>就已经写进记忆。如果这次模型调用失败（超时、限流、401），
+            记忆里会留下一条没有回答的提问；客户端重试时会再写一条，形成重复。生产环境要在重试前用
+            <code>clear()</code> 或自己做幂等，别让失败请求污染上下文。
+          </p>
+        </div>
+
+        <h2 id="stores">存储选型：内存 / JDBC / Redis</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>实现</th>
+                <th>引入方式</th>
+                <th>适合</th>
+                <th>要注意</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>InMemoryChatMemoryRepository</code></td>
+                <td><code>spring-ai-starter-model-chat-memory</code>（DeepSeek starter 已带）</td>
+                <td>单机演示、单元测试</td>
+                <td>重启即丢；多副本之间不共享</td>
+              </tr>
+              <tr>
+                <td><code>JdbcChatMemoryRepository</code></td>
+                <td><code>spring-ai-starter-model-chat-memory-repository-jdbc</code></td>
+                <td>已有关系库、要能用 SQL 查</td>
+                <td>每次写入是整段覆盖；表要按方言建</td>
+              </tr>
+              <tr>
+                <td>Redis 仓库</td>
+                <td><code>spring-ai-starter-model-chat-memory-repository-redis</code></td>
+                <td>多副本、低延迟、要 TTL</td>
+                <td>2.0.1 改过 artifact 与配置前缀</td>
+              </tr>
+              <tr>
+                <td>Mongo / Cassandra / Neo4j</td>
+                <td><code>...-repository-mongodb</code> 等</td>
+                <td>已有对应基础设施</td>
+                <td>各自有额外的索引/表初始化</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          无论换哪种存储，<code>ChatMemory</code> 这一层都不用改：<code>MessageWindowChatMemory.builder()
+          .chatMemoryRepository(newRepo)</code> 就够了。这正是前面「策略 + 存储」拆分的收益。
+        </p>
+
+        <h2 id="jdbc">JDBC：表结构、sequence_id 与初始化开关</h2>
+        <p>JDBC 仓库的核心表只有一张。下面是测试用的 HSQLDB 脚本；PostgreSQL / MySQL 的列类型由各自方言决定，字段名不变：</p>
+        <pre data-lang="sql" data-file="SPRING_AI_CHAT_MEMORY">CREATE TABLE IF NOT EXISTS SPRING_AI_CHAT_MEMORY (
+    conversation_id VARCHAR(36) NOT NULL,
+    content         LONGVARCHAR NOT NULL,
+    type            VARCHAR(10) NOT NULL,
+    timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    sequence_id     BIGINT NOT NULL
+);</pre>
+        <p>
+          <code>sequence_id</code> 是 2.0.0 新加的列，用来决定同一会话内的消息顺序；只靠 <code>timestamp</code>
+          在同一毫秒写入多条时会乱序。升级已有库时必须补这一列。
+        </p>
+        <p class="src-line">
+          表结构<span class="src" data-src="auto-configurations/models/chat/memory/repository/spring-ai-autoconfigure-model-chat-memory-repository-jdbc/src/test/resources/schema.sql:2">schema.sql:2</span>；
+          <code>sequence_id</code> 的引入说明<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/api/chat-memory.adoc:210">chat-memory.adoc:210</span>。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>配置项</th>
+                <th>默认值</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>spring.ai.chat.memory.repository.jdbc.initialize-schema</code></td>
+                <td><code>embedded</code></td>
+                <td><code>embedded</code> / <code>always</code> / <code>never</code></td>
+              </tr>
+              <tr>
+                <td><code>spring.ai.chat.memory.repository.jdbc.schema</code></td>
+                <td><code>classpath:.../schema-@@platform@@.sql</code></td>
+                <td>自定义建表脚本位置</td>
+              </tr>
+              <tr>
+                <td><code>spring.ai.chat.memory.repository.jdbc.platform</code></td>
+                <td>自动探测</td>
+                <td>脚本里的 <code>@@platform@@</code> 占位符</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          配置项与默认值见 <span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/api/chat-memory.adoc:201">chat-memory.adoc:201</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">生产库不要用 <code>always</code> 去「自动建表」</span>
+          <p>
+            默认的 <code>embedded</code> 只对内嵌库建表，生产环境通常设为 <code>never</code>，把建表交给
+            Flyway / Liquibase。否则应用启动时可能因为权限不足或并发建表失败，把整个服务卡在启动阶段。
+          </p>
+        </div>
+
+        <h2 id="redis">Redis：前缀在 2.0.1 改过名</h2>
+        <p>
+          2.0.1 把这个模块的 artifact 和配置前缀一起改了：artifact 加上 <code>-repository-</code>，
+          属性前缀从 <code>spring.ai.chat.memory.redis.*</code> 变为
+          <code>spring.ai.chat.memory.repository.redis.*</code>。旧属性还留了兼容，但已标记弃用。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>配置项（新前缀）</th>
+                <th>默认值</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>...repository.redis.host</code> / <code>port</code></td>
+                <td><code>localhost</code> / <code>6379</code></td>
+                <td>连接信息</td>
+              </tr>
+              <tr>
+                <td><code>...repository.redis.index-name</code></td>
+                <td><code>chat-memory-idx</code></td>
+                <td>Redis Search 索引名</td>
+              </tr>
+              <tr>
+                <td><code>...repository.redis.key-prefix</code></td>
+                <td><code>chat-memory:</code></td>
+                <td>key 前缀，多环境共用实例时务必改</td>
+              </tr>
+              <tr>
+                <td><code>...repository.redis.time-to-live</code></td>
+                <td>不设置（不过期）</td>
+                <td>例如 <code>24h</code>；会话数据不该永久堆积</td>
+              </tr>
+              <tr>
+                <td><code>...repository.redis.initialize-schema</code></td>
+                <td><code>true</code></td>
+                <td>是否在启动时建索引</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          改动说明<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:54">upgrade-notes.adoc:54</span>；
+          配置项与默认值<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/api/chat-memory.adoc:556">chat-memory.adoc:556</span>。
+        </p>
+
+        <h2 id="end-to-end">端到端：一次多轮请求的时间线</h2>
+        <div class="steps">
+          <li>
+            <span class="sh">① 进入 Advisor 链</span>
+            <div>记忆 Advisor 的 order 很小，先于工具与日志 Advisor 执行。</div>
+          </li>
+          <li>
+            <span class="sh">② 读历史</span>
+            <div><code>chatMemory.get(conversationId)</code> → 仓库按会话查出消息列表。</div>
+          </li>
+          <li>
+            <span class="sh">③ 拼 prompt 并写 user</span>
+            <div>历史 + 本轮消息合并，system 置顶；本轮 user 消息立即写回记忆。</div>
+          </li>
+          <li>
+            <span class="sh">④ 调模型</span>
+            <div>后续 Advisor 与 <code>ChatModel</code> 看到的已经是带历史的完整 prompt。</div>
+          </li>
+          <li>
+            <span class="sh">⑤ 写 assistant</span>
+            <div>响应回来后 <code>chatMemory.add(conversationId, assistantMessages)</code>，窗口裁剪在这一步发生。</div>
+          </li>
+          <li>
+            <span class="sh">⑥ 落库</span>
+            <div><code>saveAll</code> 用整段消息覆盖该会话——所以窗口上限同时也是单次写入的上限。</div>
+          </li>
+        </div>
+
+        <h2 id="cheatsheet">速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>写法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>挂记忆 Advisor</td>
+                <td><code>.defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())</code></td>
+              </tr>
+              <tr>
+                <td>指定会话</td>
+                <td><code>.advisors(a -&gt; a.param(ChatMemory.CONVERSATION_ID, id))</code></td>
+              </tr>
+              <tr>
+                <td>改窗口大小</td>
+                <td><code>MessageWindowChatMemory.builder().maxMessages(n)</code></td>
+              </tr>
+              <tr>
+                <td>换存储</td>
+                <td><code>.chatMemoryRepository(repo)</code></td>
+              </tr>
+              <tr>
+                <td>清空某会话</td>
+                <td><code>chatMemory.clear(conversationId)</code></td>
+              </tr>
+              <tr>
+                <td>列出所有会话</td>
+                <td><code>chatMemoryRepository.findConversationIds()</code></td>
+              </tr>
+              <tr>
+                <td>调整 Advisor 顺序</td>
+                <td><code>MessageChatMemoryAdvisor.builder(m).order(n).build()</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">启动正常，第一次调用抛 <code>IllegalArgumentException: conversationId cannot be null</code></span>
+          <p>
+            <strong>因为</strong>2.0 起记忆 Advisor 强制要求会话 ID，取不到就断言失败。
+            <strong>改成</strong>每次调用都传 <code>ChatMemory.CONVERSATION_ID</code>。
+            <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/api/BaseChatMemoryAdvisor.java:41">BaseChatMemoryAdvisor.java:41</span>
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">抄了 <code>.conversationId("default")</code> 编译不过</span>
+          <p>
+            <strong>因为</strong>2.0 删掉了 Builder 上的 <code>conversationId()</code>，也删掉了
+            <code>ChatMemory.DEFAULT_CONVERSATION_ID</code>。<strong>改成</strong>把会话 ID 放到调用上下文里传。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">本地测得好好的，上线后每个副本各记各的</span>
+          <p>
+            <strong>因为</strong>用了内存仓库。<strong>改成</strong>换 JDBC / Redis，并把会话 ID 设计成与实例无关
+            （不要拼进程 ID 或随机数）。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">聊到第 30 轮，模型忘了你最开始定的规则</span>
+          <p>
+            <strong>因为</strong>窗口只保留 20 条，早期消息被裁掉了。<strong>改成</strong>把长期约束写进 SystemMessage
+            ——系统消息不参与淘汰；或者把关键事实沉淀到外部存储，每轮检索后再注入。
+          </p>
+        </div>
+        <div class="callout tip">
+          <span class="ct">会话 ID 的命名值得单独设计</span>
+          <p>
+            <code>userId</code> 一个人一个会话，会让「同一用户开两个话题」互相污染。推荐
+            <code>userId + ":" + sessionId</code>，并在前端明确「新建对话」的动作，对应一个新的 sessionId。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>为什么裁剪点要对齐到 user 消息，而不是直接按数量切？</li>
+          <li>模型调用失败时，记忆里会不会留下这轮提问？为什么？</li>
+          <li>把存储从内存换成 JDBC，需要改动 <code>ChatMemory</code> 的哪一部分？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把 <code>maxMessages</code> 改成 4，连续聊 5 轮，打印每轮 <code>chatMemory.get(id).size()</code>，观察裁剪时机。</li>
+          <li>给 session 加一个「新对话」接口，调用 <code>chatMemory.clear(id)</code>，验证清空后模型不再记得。</li>
+          <li>把会话 ID 改成 <code>userId + ":" + sessionId</code>，验证同一用户的两个 session 互不干扰。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章「06 Advisor 机制」会把这一章的 <code>MessageChatMemoryAdvisor</code> 当成范例，讲清 Advisor 链的
+          order、before/after 与自定义 Advisor 的写法；之后进入「07 RAG 总览」。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 评测：确定性断言、离线回归集、检索指标（recall@k / MRR / hit rate）、内置 RelevancyEvaluator 与 FactCheckingEvaluator、LLM-as-judge 的偏差与 CI 门禁。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="16 评测：怎么知道它变好了还是变差了 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="回归集、检索指标、内置 Evaluator、LLM-as-judge 偏差与 CI 门禁。" />
+    <title>16 评测：怎么知道它变好了还是变差了 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="16-evaluation" data-root="..">
+    <main>
+      <article class="article">
+        <h1>16 · 评测</h1>
+        <p class="lede">
+          改了 prompt、换了模型、调了 topK 之后，怎么知道是变好还是变差？靠「感觉答得不错」不行。
+          这一章给三层可落地的评测：<strong>确定性断言</strong>、<strong>离线回归集</strong>、<strong>在线指标</strong>，
+          并讲清内置 <code>Evaluator</code> 与 LLM-as-judge 的真实边界。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>把「回答质量」拆成可测量的检索指标与生成指标，而不是一个笼统的分数</li>
+          <li>用 50 条左右的回归集，在 CI 里挡住「改坏了」的提交</li>
+          <li>用内置 <code>RelevancyEvaluator</code> / <code>FactCheckingEvaluator</code> 做生成质量判断</li>
+          <li>说清 LLM-as-judge 的三种偏差，以及为什么 judge 不能和被测模型同源</li>
+        </ul>
+
+        <h2 id="why">先说为什么：没有基线的优化都是猜测</h2>
+        <p>
+          调 RAG 最常见的循环是：改 topK → 问两个问题 → 感觉好多了 → 上线 → 用户说更差了。
+          问题在于你比较的是「两个记忆中的样本」，不是同一批固定输入。评测要做的，就是把这批输入固定下来，
+          让每次改动都有同一把尺子。
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">确定性断言（第 13 章）</span>
+            <div class="ld">工具参数、JSON 解析、模板拼接。答案唯一，适合单元测试。</div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">离线回归集（本章重点）</span>
+            <div class="ld">固定问题 + 期望证据 + 期望事实，跑检索指标与生成判断。</div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">在线指标</span>
+            <div class="ld">点赞/点踩、引用点击、转人工率、延迟与 token 成本。</div>
+          </div>
+        </div>
+        <div class="callout">
+          <span class="ct">三层解决的是不同问题</span>
+          <p>
+            离线回答「这次改动有没有变差」；在线回答「真实用户是否满意」；确定性断言回答「代码逻辑有没有写错」。
+            三层都不能互相替代，尤其不能拿在线点赞数去调 topK——噪音太大、周期太长。
+          </p>
+        </div>
+
+        <h2 id="layers">先分清：检索指标 vs 生成指标</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>指标</th>
+                <th>衡量什么</th>
+                <th>需要 LLM 吗</th>
+                <th>稳定性</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>recall@k</td>
+                <td>相关文档有没有被召回</td>
+                <td>不需要</td>
+                <td>高</td>
+              </tr>
+              <tr>
+                <td>MRR</td>
+                <td>第一个相关结果排得多靠前</td>
+                <td>不需要</td>
+                <td>高</td>
+              </tr>
+              <tr>
+                <td>hit rate</td>
+                <td>多少问题至少命中一条</td>
+                <td>不需要</td>
+                <td>高</td>
+              </tr>
+              <tr>
+                <td>Relevancy</td>
+                <td>回答是否与上下文一致</td>
+                <td>需要（judge）</td>
+                <td>中</td>
+              </tr>
+              <tr>
+                <td>Fact checking</td>
+                <td>回答是否被文档支持</td>
+                <td>需要（judge）</td>
+                <td>中</td>
+              </tr>
+              <tr>
+                <td>人工评分</td>
+                <td>整体有用性</td>
+                <td>需要人</td>
+                <td>高但贵</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          顺序很重要：<strong>先保证检索能召回，再谈回答好不好</strong>。检索错了，生成指标再高也只是「基于错误上下文的自洽」。
+        </p>
+
+        <h2 id="goldenset">回归集：50 条就够，但要选对</h2>
+        <p>一份可用的回归集至少包含四类样本，别只收集「正常问题」：</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>类型</th>
+                <th>例子</th>
+                <th>防什么</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>常规问题</td>
+                <td>「满多少包邮？」</td>
+                <td>基础召回</td>
+              </tr>
+              <tr>
+                <td>同义改写</td>
+                <td>「运费怎么免？」</td>
+                <td>只会匹配原词的检索</td>
+              </tr>
+              <tr>
+                <td>多轮追问</td>
+                <td>「那退款呢？」（上文在聊运费）</td>
+                <td>不改写就直接检索</td>
+              </tr>
+              <tr>
+                <td>不该回答</td>
+                <td>「帮我写一首诗」</td>
+                <td>没有依据也硬编</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre data-lang="json" data-file="eval/golden.jsonl">{"id":"ship-01","question":"满多少包邮？","relevantIds":["doc-shipping#0"],"mustInclude":["99"],"mustNotInclude":["88"]}
+{"id":"ship-02","question":"运费怎么免？","relevantIds":["doc-shipping#0"],"mustInclude":["99"]}
+{"id":"refund-01","question":"那退款呢？","relevantIds":["doc-refund#0"],"mustInclude":["7 天"],"history":["运费怎么算？"]}
+{"id":"out-01","question":"帮我写一首诗","relevantIds":[],"mustInclude":[],"mustNotInclude":[]}</pre>
+        <div class="callout warn">
+          <span class="ct">chunk id 与源文档 id 不是一回事</span>
+          <p>
+            切分之后，每个 chunk 的 id 由切分器重新生成。回归集如果只标「源文件名」，你无法判断命中的是第几块；
+            如果标了旧 id，重建索引后又对不上。可靠做法：入库时把 <code>source</code> + <code>chunkIndex</code>
+            写进 metadata，回归集按这两个字段断言。
+          </p>
+        </div>
+
+        <h2 id="retrieval">检索指标：三个公式，一段代码</h2>
+        <p>设第 i 个问题的相关文档集合为 <code>Rᵢ</code>，检索返回前 k 条为 <code>Tᵢ(k)</code>：</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>指标</th>
+                <th>公式</th>
+                <th>直觉</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>recall@k</td>
+                <td><code>|Rᵢ ∩ Tᵢ(k)| / |Rᵢ|</code></td>
+                <td>该找到的找到了多少</td>
+              </tr>
+              <tr>
+                <td>MRR</td>
+                <td><code>mean(1 / rank(first relevant))</code></td>
+                <td>第一条相关结果排第几</td>
+              </tr>
+              <tr>
+                <td>hit rate@k</td>
+                <td><code>count(hit) / N</code></td>
+                <td>多少问题至少命中一条</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre data-lang="java" data-file="eval/RetrievalEval.java">record Case(String question, Set&lt;String&gt; relevantIds) {}
+record Report(double recallAtK, double mrr, double hitRate) {}
+
+Report evaluate(VectorStore store, List&lt;Case&gt; cases, int k) {
+    double recall = 0;
+    double mrr = 0;
+    int hits = 0;
+
+    for (Case c : cases) {
+        List&lt;String&gt; ids = store.similaritySearch(
+                        SearchRequest.builder().query(c.question()).topK(k).build())
+                .stream().map(Document::getId).toList();
+
+        long found = ids.stream().filter(c.relevantIds()::contains).count();
+        recall += c.relevantIds().isEmpty() ? 1.0 : found / (double) c.relevantIds().size();
+
+        int first = java.util.stream.IntStream.range(0, ids.size())
+                .filter(i -&gt; c.relevantIds().contains(ids.get(i)))
+                .findFirst().orElse(-1);
+        if (first &gt;= 0) {
+            hits++;
+            mrr += 1.0 / (first + 1);
+        }
+    }
+
+    int n = cases.size();
+    return new Report(recall / n, mrr / n, hits / (double) n);
+}</pre>
+        <p>
+          对「不该回答」的样本（<code>relevantIds</code> 为空），命中任何文档都算失败；这类样本应该单独统计，
+          不要混进 MRR，否则分母没有意义。
+        </p>
+        <div class="callout tip">
+          <span class="ct">先跑一次基线，再谈阈值</span>
+          <p>
+            新项目没有基线时，先记录当前值（比如 recall@4 = 0.62），然后把「不允许低于基线 5%」作为门禁。
+            直接照搬别人的 0.9 只会让你永远发不了版。
+          </p>
+        </div>
+
+        <h2 id="generation">生成指标：内置的两个 Evaluator</h2>
+        <p>
+          Spring AI 2.0.2 的评测接口在 <code>spring-ai-commons</code>，实现放在 <code>spring-ai-client-chat</code>：
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>类型</th>
+                <th>作用</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>Evaluator</code></td>
+                <td>函数式接口：<code>EvaluationResponse evaluate(EvaluationRequest)</code></td>
+              </tr>
+              <tr>
+                <td><code>EvaluationRequest</code></td>
+                <td>用户问题 + 上下文文档列表 + 模型回答</td>
+              </tr>
+              <tr>
+                <td><code>EvaluationResponse</code></td>
+                <td><code>pass</code> / <code>score</code> / <code>feedback</code> / <code>metadata</code></td>
+              </tr>
+              <tr>
+                <td><code>RelevancyEvaluator</code></td>
+                <td>回答是否与检索到的上下文一致</td>
+              </tr>
+              <tr>
+                <td><code>FactCheckingEvaluator</code></td>
+                <td>回答中的 claim 是否被文档支持</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre data-lang="java" data-file="用 RelevancyEvaluator 评估一次 RAG">ChatResponse response = chatClient.prompt(question)
+        .advisors(ragAdvisor)
+        .call()
+        .chatResponse();
+
+EvaluationRequest request = new EvaluationRequest(
+        question,
+        response.getMetadata().get(RetrievalAugmentationAdvisor.DOCUMENT_CONTEXT),
+        response.getResult().getOutput().getText());
+
+RelevancyEvaluator evaluator = RelevancyEvaluator.builder()
+        .chatClientBuilder(ChatClient.builder(judgeChatModel))
+        .build();
+
+EvaluationResponse result = evaluator.evaluate(request);
+assertThat(result.isPass()).isTrue();</pre>
+        <p class="src-line">
+          接口与请求/响应<span class="src" data-src="spring-ai-commons/src/main/java/org/springframework/ai/evaluation/Evaluator.java:26">Evaluator.java:26</span>、
+          <span class="src" data-src="spring-ai-commons/src/main/java/org/springframework/ai/evaluation/EvaluationRequest.java:36">EvaluationRequest.java:36</span>、
+          <span class="src" data-src="spring-ai-commons/src/main/java/org/springframework/ai/evaluation/EvaluationResponse.java:24">EvaluationResponse.java:24</span>；
+          <code>RelevancyEvaluator</code> 的构造与评估<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/evaluation/RelevancyEvaluator.java:61">RelevancyEvaluator.java:61</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">它们只认「yes」，而且只给 0/1</span>
+          <p>
+            两个内置实现都是把 judge 的回答 <code>strip()</code> 后与 <code>"yes"</code> 做忽略大小写比较，
+            其它任何内容都算失败。模型回 <code>Yes.</code>（带句号）或 <code>The answer is yes</code> 都会被判否。
+            自定义 prompt 时必须强制「只输出 yes 或 no」，否则通过率会莫名其妙地低。
+            <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/evaluation/RelevancyEvaluator.java:84">RelevancyEvaluator.java:84</span>
+          </p>
+        </div>
+        <div class="callout">
+          <span class="ct">文档里有处过期示例</span>
+          <p>
+            <code>api/testing.adoc</code> 把 <code>EvaluationRequest.dataList</code> 写成了
+            <code>List&lt;Content&gt;</code>，但 2.0.2 源码里是 <code>List&lt;Document&gt;</code>。
+            按源码写，别照抄文档的类型。
+            <span class="src" data-src="spring-ai-commons/src/main/java/org/springframework/ai/evaluation/EvaluationRequest.java:40">EvaluationRequest.java:40</span>
+          </p>
+        </div>
+
+        <h2 id="judge">LLM-as-judge：三种偏差，绕不开</h2>
+        <p>
+          用模型当裁判是可行的：评判比生成简单，研究上它与人类判断的一致率可以接近人类之间的一致率。
+          但它是<strong>有偏的测量工具</strong>，不校准就会得出错误结论。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>偏差</th>
+                <th>表现</th>
+                <th>缓解</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>自恋偏差</td>
+                <td>judge 偏爱自己生成的答案</td>
+                <td>用不同厂商/不同模型做 judge；至少不同参数</td>
+              </tr>
+              <tr>
+                <td>位置偏差</td>
+                <td>pairwise 时偏爱第一个或第二个</td>
+                <td>A/B 交换顺序各评一次，只统计一致的胜负</td>
+              </tr>
+              <tr>
+                <td>长度/格式偏差</td>
+                <td>更长、更有条理的回答得分更高</td>
+                <td>控制长度、盲评、把评分维度拆开</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          两种模式：<strong>point-wise</strong>（单条回答打 1–4 分，适合做通过率）与
+          <strong>pairwise</strong>（两条回答二选一，适合 A/B）。前者便宜，后者更接近人类偏好但要做位置交换。
+        </p>
+        <p class="src-line">
+          两种模式与 judge 选型<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/guides/llm-as-judge.adoc:23">llm-as-judge.adoc:23</span>；
+          官方示例明确要求「用独立的 ChatClient 避免自恋偏差」<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/guides/llm-as-judge.adoc:175">llm-as-judge.adoc:175</span>。
+        </p>
+
+        <h2 id="selfrefine">自纠正：把 judge 接回 Advisor 链</h2>
+        <p>
+          评测不只能离线跑。官方 guide 给了一个「生成 → 评判 → 带反馈重试」的递归 Advisor：
+          judge 打分不达标时，把反馈追加到请求里重新生成，直到达标或用完重试次数。
+        </p>
+        <pre data-lang="java" data-file="SelfRefineEvaluationAdvisor（骨架）">public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
+    ChatClientResponse response = chain.nextCall(request);
+
+    for (int attempt = 1; attempt &lt;= maxRepeatAttempts + 1; attempt++) {
+        Evaluation evaluation = judge(request, response);   // 独立 judge 模型
+
+        if (evaluation.rating() &gt;= successRating) {
+            return response;
+        }
+        if (attempt &gt; maxRepeatAttempts) {
+            throw new IllegalStateException("评分未达标：" + evaluation.feedback());
+        }
+
+        // 把反馈拼回请求，重新走一遍后面的链
+        ChatClientRequest retry = addFeedback(request, evaluation.feedback());
+        response = chain.copy(this).nextCall(retry);
+    }
+    return response;
+}</pre>
+        <p>
+          它复用了第 06 章的 <code>chain.copy(this)</code> 递归机制，和第 10 章的工具循环是同一个套路。
+          代价也很直接：一次回答最多变成 <code>1 + maxRepeatAttempts</code> 次生成 + 同样次数的 judge 调用。
+        </p>
+        <div class="callout warn">
+          <span class="ct">别把它放进主链路</span>
+          <p>
+            自纠正适合「质量优先、可接受延迟」的场景（报告生成、代码修复），不适合聊天首响。
+            真要上线，至少设上限、超时、并在 judge 失败时降级返回原始回答。
+          </p>
+        </div>
+        <p class="src-line">
+          递归 Advisor 与参数示例<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/guides/llm-as-judge.adoc:237">llm-as-judge.adoc:237</span>。
+        </p>
+
+        <h2 id="ci">CI 门禁：让「改坏了」发不出去</h2>
+        <p>把评测做成一个普通的 JUnit 测试，用环境变量守卫真实模型调用，用阈值做断言：</p>
+        <pre data-lang="java" data-file="eval/RegressionEvalTest.java">@EnabledIfEnvironmentVariable(named = "RUN_EVAL", matches = "true")
+class RegressionEvalTest {
+
+    @Test
+    void 检索指标不得低于基线() {
+        Report report = new RetrievalEval().evaluate(vectorStore, GoldenSet.load(), 4);
+
+        assertThat(report.recallAtK()).isGreaterThanOrEqualTo(0.62);
+        assertThat(report.hitRate()).isGreaterThanOrEqualTo(0.85);
+        assertThat(report.mrr()).isGreaterThanOrEqualTo(0.55);
+    }
+
+    @Test
+    void 生成相关性通过率不得低于基线() {
+        long passed = GoldenSet.load().stream()
+                .filter(c -&gt; !c.relevantIds().isEmpty())
+                .filter(c -&gt; evaluator.evaluate(toRequest(c)).isPass())
+                .count();
+
+        assertThat(passed / (double) GoldenSet.load().size()).isGreaterThanOrEqualTo(0.80);
+    }
+}</pre>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>实践</th>
+                <th>原因</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>只在 PR / nightly 跑</td>
+                <td>每次提交都调真实模型太贵</td>
+              </tr>
+              <tr>
+                <td>固定随机种子/温度 0</td>
+                <td>减少非确定性带来的假失败</td>
+              </tr>
+              <tr>
+                <td>同一输入跑 3 次取多数</td>
+                <td>单次结果参考价值低</td>
+              </tr>
+              <tr>
+                <td>失败样例落盘</td>
+                <td>只看通过率无法定位问题</td>
+              </tr>
+              <tr>
+                <td>阈值相对基线</td>
+                <td>绝对分数没有可比性</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="cost">成本：评测本身也是一笔开销</h2>
+        <p>
+          一次生成评估 = 1 次被测模型调用 + 1 次 judge 调用；50 条 × 3 次重复 × 2 次调用 = 300 次调用。
+          用大模型当 judge，很容易比线上流量还贵。三个控制手段：
+        </p>
+        <ol>
+          <li><strong>缓存</strong>：以「问题 + 回答 + judge prompt + judge 模型」的哈希做 key，命中直接复用。</li>
+          <li><strong>分层</strong>：检索指标零成本，每次都跑；生成指标只在改动 prompt/模型时跑。</li>
+          <li><strong>小模型 judge</strong>：先用小模型筛明显失败，再用大模型复核边界样本。</li>
+        </ol>
+        <div class="callout tip">
+          <span class="ct">人工校准 50 条，换长期自动化</span>
+          <p>
+            judge 的分数只有和人工判断对齐才有意义。抽 50 条人工打分，比较 judge 与人的一致率；
+            一致率低就先改 prompt/换 judge，而不是直接信分数。
+          </p>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">用检索到的同一段上下文做 judge，等于自己证明自己</span>
+          <p>
+            <strong>因为</strong>Relevancy 只判断「回答是否与给定上下文一致」，不判断上下文本身是否正确。
+            <strong>改成</strong>再配一层 Fact checking + 人工抽检，或对关键事实做规则断言（必须包含某数字/日期）。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">通过率突然掉到 20%</span>
+          <p>
+            <strong>因为</strong>judge 回了 <code>Yes.</code> 而代码只认 <code>yes</code>。<strong>改成</strong>
+            在自定义 prompt 里强制「只输出小写 yes 或 no」，或在评估器外面包一层容错解析。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">同一版本跑两次，指标差很多</span>
+          <p>
+            <strong>因为</strong>温度、并发、judge 的非确定性。<strong>改成</strong>温度设 0、固定回归集顺序、
+            重复 3 次取多数，并记录每次的原始输出。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">回归集全是「好回答」</span>
+          <p>
+            <strong>因为</strong>只收集了成功案例。<strong>改成</strong>按「常规 / 改写 / 多轮 / 不该回答」四类配比，
+            并定期把线上失败案例补进去。
+          </p>
+        </div>
+
+        <h2 id="cheatsheet">速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>写法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>定义评估器</td>
+                <td><code>implements Evaluator</code> 或直接用内置两个</td>
+              </tr>
+              <tr>
+                <td>构造请求</td>
+                <td><code>new EvaluationRequest(question, docs, answer)</code></td>
+              </tr>
+              <tr>
+                <td>相关性判断</td>
+                <td><code>new RelevancyEvaluator(ChatClient.builder(judgeModel))</code></td>
+              </tr>
+              <tr>
+                <td>事实校验</td>
+                <td><code>FactCheckingEvaluator.builder(ChatClient.builder(judgeModel)).build()</code></td>
+              </tr>
+              <tr>
+                <td>取 RAG 上下文</td>
+                <td><code>response.getMetadata().get(RetrievalAugmentationAdvisor.DOCUMENT_CONTEXT)</code></td>
+              </tr>
+              <tr>
+                <td>检索指标</td>
+                <td>自己算 recall@k / MRR / hit rate</td>
+              </tr>
+              <tr>
+                <td>CI 门禁</td>
+                <td><code>@EnabledIfEnvironmentVariable</code> + 阈值断言</td>
+              </tr>
+              <tr>
+                <td>自纠正</td>
+                <td>递归 Advisor + 独立 judge</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>为什么检索指标应该先于生成指标优化？举一个生成指标掩盖检索错误的例子。</li>
+          <li><code>RelevancyEvaluator</code> 为什么可能把正确答案判成失败？怎么修？</li>
+          <li>pairwise judge 的位置偏差怎么消除？为什么不能只跑一次？</li>
+        </ol>
+
+        <h2 id="exercise">30 分钟动手练习</h2>
+        <ol>
+          <li>给第 07 章的 3 篇文档建 10 条回归样本，计算 recall@4 与 hit rate@4。</li>
+          <li>用 <code>RelevancyEvaluator</code> 跑一遍，记录通过率与失败样例。</li>
+          <li>把 judge 换成另一个模型，比较两次通过率差异——差异大说明你的样本或 prompt 不稳。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          正文到此结束。附录里还有术语表、报错速查、API 速查、1.x → 2.0 迁移表和源码地图；
+          评测用的 <code>Evaluator</code> 相关签名也补进了附录 C。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

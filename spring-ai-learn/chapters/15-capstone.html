@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 综合案例：把 DeepSeek、pgvector、RAG、工具调用、记忆、流式、引用与观测组装成一个可上线的知识库问答服务。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="15 综合案例：一个能上线的知识库问答服务 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="DeepSeek + pgvector + RAG + 工具 + 记忆 + 流式 + 引用 + 观测的完整组装。" />
+    <title>15 综合案例：一个能上线的知识库问答服务 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="15-capstone" data-root="..">
+    <main>
+      <article class="article">
+        <h1>15 · 综合案例</h1>
+        <p class="lede">
+          把前 14 章拼成一个真实服务：<strong>企业知识库问答</strong>。要求是：能查内部文档、能调订单工具、
+          支持多轮、流式返回、答案带引用、失败能降级、成本可观测。这一章给完整骨架与每个决策的理由。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>画出「文档入库」与「在线问答」两条链路的组件与数据流</li>
+          <li>把 ChatClient、Advisor、工具、向量库、记忆组装成一个可运行工程</li>
+          <li>实现带引用的流式回答，并处理取消、超时与降级</li>
+          <li>用一份配置和一个 compose 文件把服务跑起来</li>
+        </ul>
+
+        <h2 id="arch">架构：两条链路，五个组件</h2>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">离线：文档入库</span>
+            <div class="ld">
+              文档源 → Reader → TokenTextSplitter → EmbeddingModel → VectorStore（pgvector）。
+              用文档哈希做幂等，重复导入不产生重复块。
+            </div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">在线：一次提问</span>
+            <div class="ld">
+              用户问题 → 记忆 Advisor（取历史）→ RAG Advisor（改写/检索/拼上下文）→ 工具 Advisor（按需调订单）
+              → ChatModel（DeepSeek）→ 流式返回 + 引用。
+            </div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">横切：观测、限流、降级</span>
+            <div class="ld">Observation 记录链路，Retry/超时兜底，失败时返回缓存或固定话术。</div>
+          </div>
+        </div>
+        <p>为什么这样切：入库与问答的负载特征完全不同——入库是批量、可重试、离线；问答是在线、低延迟、要限流。
+          分开之后，两边可以独立扩容与调参。</p>
+
+        <h2 id="structure">工程结构</h2>
+        <pre data-lang="text" data-file="目录">kb-service/
+├── pom.xml
+├── compose.yaml
+└── src/main/
+    ├── java/com/example/kb/
+    │   ├── KbApplication.java
+    │   ├── config/        RagConfig / ChatConfig / RetryConfig
+    │   ├── ingest/        IngestService / DocumentSource
+    │   ├── chat/          ChatService / ChatController
+    │   ├── tool/          OrderTools
+    │   └── web/           CitationAdvice (把引用塞进响应头/事件)
+    └── resources/
+        ├── application.yml
+        └── docs/          退款政策.md / 运费规则.md / 产品手册.md</pre>
+
+        <h2 id="deps">依赖：四个 AI 依赖 + Web</h2>
+        <pre data-lang="xml" data-file="pom.xml">    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.ai&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-ai-starter-model-deepseek&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.ai&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-ai-starter-model-transformers&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.ai&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-ai-starter-vector-store-pgvector&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.ai&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-ai-vector-store-advisor&lt;/artifactId&gt;
+    &lt;/dependency&gt;</pre>
+        <p>
+          对话用 DeepSeek、向量用本地 ONNX：一个要联网、一个不联网，互不影响；换 embedding 模型只需改配置与重建索引。
+          <code>spring-ai-vector-store-advisor</code> 提供 <code>QuestionAnswerAdvisor</code>，版本仍由 BOM 管。
+        </p>
+
+        <h2 id="config">配置：一个文件看全</h2>
+        <pre data-lang="yaml" data-file="application.yml">spring:
+  ai:
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY}
+      chat:
+        model: deepseek-v4-flash
+        temperature: 0.3
+    embedding:
+      transformer:
+        cache:
+          directory: /var/cache/spring-ai
+        onnx:
+          model-output-name: last_hidden_state
+    vectorstore:
+      pgvector:
+        initialize-schema: false     # 生产用迁移脚本
+        dimensions: 384
+        index-type: HNSW
+        distance-type: COSINE_DISTANCE
+        schema-validation: true
+    retry:
+      max-attempts: 3
+      backoff:
+        initial-interval: 500ms
+        multiplier: 2
+        max-interval: 5s
+      on-http-codes: [429]
+
+server:
+  shutdown: graceful</pre>
+        <div class="callout warn">
+          <span class="ct">生产不要用 <code>initialize-schema: true</code></span>
+          <p>
+            建表、建扩展、建索引都应该走 Flyway/Liquibase，应用账号只保留 DML 权限。演示环境可以图省事，
+            生产环境让应用自动 DDL 会带来权限与并发问题。
+          </p>
+        </div>
+
+        <h2 id="ingest">入库：幂等、可重跑</h2>
+        <pre data-lang="java" data-file="ingest/IngestService.java">@Service
+class IngestService {
+
+    private final VectorStore vectorStore;
+
+    IngestService(VectorStore vectorStore) {
+        this.vectorStore = vectorStore;
+    }
+
+    int ingest(String sourceName, String text) {
+        // 用内容哈希做文档 id：同一份文档重复导入时覆盖而不是追加
+        String id = DigestUtils.md5DigestAsHex(text.getBytes(StandardCharsets.UTF_8));
+
+        Document document = Document.builder()
+                .id(id)
+                .text(text)
+                .metadata(Map.of(
+                        "source", sourceName,
+                        "embedding_model", "all-MiniLM-L6-v2",
+                        "version", 1))
+                .build();
+
+        var chunks = TokenTextSplitter.builder().build().apply(List.of(document));
+        this.vectorStore.add(chunks);
+        return chunks.size();
+    }
+}</pre>
+        <p>
+          三个细节：① id 由内容决定，重跑不会产生重复；② metadata 记录来源与 embedding 模型，方便引用与迁移；
+          ③ 切分放在入库时做，查询时只负责检索。
+        </p>
+
+        <h2 id="chat">问答：一条 Advisor 链</h2>
+        <pre data-lang="java" data-file="config/ChatConfig.java">@Configuration
+class ChatConfig {
+
+    @Bean
+    ChatClient chatClient(ChatClient.Builder builder,
+                          ChatMemory chatMemory,
+                          VectorStore vectorStore) {
+
+        var memory = MessageChatMemoryAdvisor.builder(chatMemory).build();
+
+        var rag = QuestionAnswerAdvisor.builder(vectorStore)
+                .searchRequest(SearchRequest.builder()
+                        .topK(4)
+                        .similarityThreshold(0.55)
+                        .build())
+                .build();
+
+        return builder
+                .defaultSystem("""
+                        你是企业知识库助手。
+                        只根据提供的上下文回答；上下文没有的信息，明确说「资料中没有」。
+                        回答控制在 200 字以内，并在末尾列出引用的来源文件名。
+                        """)
+                .defaultAdvisors(memory, rag)
+                .defaultTools(new OrderTools())
+                .build();
+    }
+}</pre>
+        <div class="callout">
+          <span class="ct">order 提醒</span>
+          <p>
+            记忆在 <code>MIN+200</code>、工具在 <code>MIN+300</code>、RAG 在 <code>0</code>。所以一次带工具的问答里，
+            RAG 会在工具循环的每一轮重新检索。若不想这样，把 RAG 的 order 调到小于 <code>MIN+300</code>。
+          </p>
+        </div>
+
+        <h2 id="tools">工具：业务上下文不要交给模型填</h2>
+        <pre data-lang="java" data-file="tool/OrderTools.java">@Component
+class OrderTools {
+
+    private final OrderRepository orders;
+
+    OrderTools(OrderRepository orders) {
+        this.orders = orders;
+    }
+
+    @Tool(description = "按订单号查询当前用户的订单状态，只读")
+    OrderView queryOrder(
+            @ToolParam(description = "订单号，例如 SO-20261106-001") String orderNo,
+            ToolContext context) {
+
+        String userId = (String) context.getContext().get("userId");
+        return this.orders.findByUserAndOrderNo(userId, orderNo);
+    }
+}</pre>
+        <pre data-lang="java" data-file="调用时传身份">chatClient.prompt()
+        .user(question)
+        .advisors(a -&gt; a.param(ChatMemory.CONVERSATION_ID, conversationId))
+        .toolContext(Map.of("userId", currentUserId))
+        .stream()
+        .content();</pre>
+        <p>
+          <code>userId</code> 必须来自登录态，不能出现在工具参数里——否则模型可以被诱导去查别人的订单。
+          这就是第 10 章强调 <code>ToolContext</code> 的原因。
+        </p>
+
+        <h2 id="streaming">流式与引用</h2>
+        <pre data-lang="java" data-file="chat/ChatController.java">@RestController
+class ChatController {
+
+    private final ChatClient chatClient;
+
+    ChatController(ChatClient chatClient) {
+        this.chatClient = chatClient;
+    }
+
+    // MVC 栈：用 SseEmitter 桥接；如果项目是 WebFlux，直接返回 Flux&lt;ServerSentEvent&lt;String&gt;&gt; 即可
+    @PostMapping("/chat/stream")
+    SseEmitter stream(@RequestBody ChatRequest request) {
+        SseEmitter emitter = new SseEmitter(0L);
+
+        Disposable d = this.chatClient.prompt()
+                .user(request.question())
+                .advisors(a -&gt; a.param(ChatMemory.CONVERSATION_ID, request.conversationId()))
+                .toolContext(Map.of("userId", request.userId()))
+                .stream()
+                .content()
+                .timeout(Duration.ofSeconds(90))
+                .subscribe(
+                        chunk -&gt; send(emitter, "delta", chunk),
+                        error -&gt; {
+                            send(emitter, "error", "生成中断，请稍后重试");
+                            emitter.complete();
+                        },
+                        () -&gt; {
+                            send(emitter, "done", "[DONE]");
+                            emitter.complete();
+                        });
+
+        emitter.onCompletion(d::dispose);
+        emitter.onTimeout(d::dispose);
+        return emitter;
+    }
+
+    private static void send(SseEmitter emitter, String event, String data) {
+        try {
+            emitter.send(SseEmitter.event().name(event).data(data));
+        }
+        catch (IOException e) {
+            emitter.completeWithError(e);
+        }
+    }
+}</pre>
+        <p>
+          引用信息在 <code>QuestionAnswerAdvisor</code> 的检索结果里。要在流开始前拿到它，可以先用同一条 RAG 链做一次
+          「预检索」，或把 <code>QuestionAnswerAdvisor</code> 换成 <code>RetrievalAugmentationAdvisor</code>，
+          从 <code>rag_document_context</code> 取文档，作为第一个 SSE 事件发出。
+        </p>
+        <p class="src-line">
+          RAG 上下文 key<span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/advisor/RetrievalAugmentationAdvisor.java:64">RetrievalAugmentationAdvisor.java:64</span>；
+          记忆会话参数<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/ChatMemory.java:36">ChatMemory.java:36</span>。
+        </p>
+
+        <h2 id="tests">测试：三层，不烧钱</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>层</th>
+                <th>怎么测</th>
+                <th>覆盖什么</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>单元</td>
+                <td>StubChatModel + StubEmbeddingModel</td>
+                <td>Advisor 拼装、引用、错误兜底</td>
+              </tr>
+              <tr>
+                <td>工具</td>
+                <td>直接调 <code>ToolCallback.call(json)</code></td>
+                <td>参数绑定、权限、异常</td>
+              </tr>
+              <tr>
+                <td>集成</td>
+                <td>Testcontainers pgvector + 环境变量守卫的真实模型</td>
+                <td>建表、检索排序、端到端流式</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>上线前至少要有：检索命中率的回归集（20–50 条问题）、工具越权的负向用例、超时/限流的故障演练。</p>
+
+        <h2 id="deploy">部署：两个容器</h2>
+        <pre data-lang="yaml" data-file="compose.yaml">services:
+  pgvector:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: kb
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: kb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kb"]
+      interval: 5s
+
+  app:
+    build: .
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://pgvector:5432/kb
+      SPRING_DATASOURCE_USERNAME: kb
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
+    depends_on:
+      pgvector:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:</pre>
+        <div class="callout tip">
+          <span class="ct">embedding 缓存要挂卷</span>
+          <p>
+            本地 ONNX 模型首次启动会下载。容器重建时如果缓存目录不持久化，每次都要重新下载。
+            把 <code>/var/cache/spring-ai</code> 挂到卷，或构建镜像时预热。
+          </p>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">上线后回答质量比 demo 差很多</span>
+          <p>
+            <strong>因为</strong>demo 只测了十几个问题，真实问题措辞千奇百怪。<strong>改成</strong>先建回归集，
+            再调 topK/阈值/改写，不要凭感觉改提示词。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">多轮对话里引用错乱</span>
+          <p>
+            <strong>因为</strong>RAG 在工具循环内重复检索，或历史里混入了上一轮的上下文。<strong>改成</strong>
+            每轮回答只展示本轮检索到的文档 id，并把引用与消息一起持久化。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">同一份文档被重复入库</span>
+          <p>
+            <strong>因为</strong>每次导入都生成新 id。<strong>改成</strong>用内容哈希或业务主键做 <code>Document</code>
+            id，并在入库前先删旧版本。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">成本失控</span>
+          <p>
+            <strong>因为</strong>topK 太大、历史全量重发、每轮都改写查询。<strong>改成</strong>按第 14 章的顺序优化，
+            并用 token 指标做预算告警。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>为什么入库与问答要分成两条链路？各自的扩缩容策略有什么不同？</li>
+          <li>这个案例里，哪些信息必须通过 <code>ToolContext</code> 传而不能作为工具参数？</li>
+          <li>要在流式回答里带引用，应该在什么时机把检索结果发给前端？</li>
+        </ol>
+
+        <h2 id="exercise">60 分钟动手练习</h2>
+        <ol>
+          <li>按上面的结构把工程跑起来，导入 3 份 Markdown，问 10 个问题并记录命中情况。</li>
+          <li>给 <code>/chat/stream</code> 加第一个 SSE 事件 <code>event: citations</code>，返回本轮引用的文件名。</li>
+          <li>把主模型配置成两个（DeepSeek + Ollama），实现一个只在同步接口生效的降级策略。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          「16 评测」把前 15 章收口：用回归集、检索指标与 LLM-as-judge 回答「这次改动到底有没有变好」。
+          读完正文后，附录 A–E 可以当手册长期查阅。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

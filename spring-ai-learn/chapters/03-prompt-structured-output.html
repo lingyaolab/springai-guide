@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 结构化输出：Prompt 模板与分隔符、BeanOutputConverter 的三步机制、entity() 的调用链、原生结构化输出为什么在 DeepSeek 上不生效、validateSchema 的重试细节。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="03 Prompt 模板与结构化输出 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="模板渲染、BeanOutputConverter、entity() 调用链、原生结构化输出与校验重试。" />
+    <title>03 Prompt 模板与结构化输出 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="03-prompt-structured-output" data-root="..">
+    <main>
+      <article class="article">
+        <h1>03 · Prompt 模板与结构化输出</h1>
+        <p class="lede">
+          <code>entity()</code> 看起来只有一行，背后其实是<strong>「生成 JSON Schema → 把指令塞进用户消息 →
+          解析并清洗」</strong>三步。这一章把三步逐层拆开，并解释一个很少有人讲清楚的事实：
+          <code>useProviderStructuredOutput()</code> 在 DeepSeek 上<strong>不会生效</strong>，而且不会报错。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>写出带占位符的 system / user 模板，并知道默认分隔符是什么、怎么换</li>
+          <li>说清 <code>entity()</code> 从 <code>BeanOutputConverter</code> 到最终对象的完整路径</li>
+          <li>判断某个厂商是否支持「原生结构化输出」，以及不支持时框架会怎么退化</li>
+          <li>用 <code>validateSchema()</code> 把「偶尔解析失败」变成「自动重试并给出原因」</li>
+        </ul>
+
+        <h2 id="why">先说为什么：模型只会输出字符串</h2>
+        <p>
+          大模型的响应本质是一段文本。你的程序要的是一个 <code>Movie</code> 对象、一个 <code>List&lt;Invoice&gt;</code>，
+          中间隔着「让模型按格式输出」和「把文本解析成对象」两件事。Spring AI 把这两件事收敛成一条路径：
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">① 生成 JSON Schema</span>
+            <div class="ld">
+              从你的 Java 类型反射出结构（字段名、类型、是否必填）。
+              <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/converter/BeanOutputConverter.java:180">BeanOutputConverter.java:180</span>
+            </div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">② 把「格式要求 + Schema」拼进提示词</span>
+            <div class="ld">
+              作为 <code>OUTPUT_FORMAT</code> 放进请求上下文，最后<strong>追加到用户消息末尾</strong>。
+              <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ChatModelCallAdvisor.java:93">ChatModelCallAdvisor.java:93</span>
+            </div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">③ 清洗 + 反序列化</span>
+            <div class="ld">
+              去掉思考标签、markdown 代码围栏、首尾空白，再交给 Jackson。
+              <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/converter/BeanOutputConverter.java:192">BeanOutputConverter.java:192</span>
+            </div>
+          </div>
+        </div>
+        <div class="callout">
+          <span class="ct">为什么默认方案是「提示词约束」而不是「厂商原生」</span>
+          <p>
+            因为前者对<strong>所有</strong>模型都成立，后者要求厂商 API 支持 JSON Schema 参数。Spring AI 把两者做成
+            可切换的两条路，默认走前者，只有你显式打开开关且厂商实现了对应接口时，才走后者。
+          </p>
+        </div>
+
+        <h2 id="minimal">最小可跑：一个 record 就够</h2>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/MovieController.java">package com.example.demo;
+
+import java.util.List;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+class MovieController {
+
+    private final ChatClient chatClient;
+
+    MovieController(ChatClient.Builder builder) {
+        this.chatClient = builder.build();
+    }
+
+    // record 的字段名就是 JSON 的 key；嵌套类型会被递归展开成 schema
+    record Movie(String title, int year, List&lt;String&gt; actors) {}
+
+    @GetMapping("/movie")
+    Movie recommend(@RequestParam(defaultValue = "科幻") String genre) {
+        return this.chatClient.prompt()
+                .user(u -&gt; u.text("推荐一部{genre}电影，并给出片名、年份和三位主演。")
+                            .param("genre", genre))
+                .call()
+                .entity(Movie.class);
+    }
+}</pre>
+        <p>
+          启动后访问 <code>http://localhost:8080/movie?genre=科幻</code>，返回的是真正的 JSON 对象，不是一段文本。
+          如果模型返回了 markdown 代码围栏，框架会在解析前清掉。
+        </p>
+
+        <h2 id="line-by-line">逐行解读：模板到底怎么渲染的</h2>
+        <p>
+          模板渲染发生在「请求规格 → Prompt」这一步，由 <code>PromptTemplate</code> 完成。默认渲染器是
+          <code>StTemplateRenderer</code>，分隔符是单个 <code>{</code> 和 <code>}</code>：
+        </p>
+        <pre data-lang="java" data-file="默认渲染器">private static final TemplateRenderer DEFAULT_TEMPLATE_RENDERER = StTemplateRenderer.builder().build();
+private static final char DEFAULT_START_DELIMITER_TOKEN = '{';
+private static final char DEFAULT_END_DELIMITER_TOKEN = '}';</pre>
+        <p class="src-line">
+          默认渲染器<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/prompt/PromptTemplate.java:51">PromptTemplate.java:51</span>，
+          默认分隔符<span class="src" data-src="spring-ai-template-st/src/main/java/org/springframework/ai/template/st/StTemplateRenderer.java:63">StTemplateRenderer.java:63</span>。
+          system 与 user 各自独立渲染，只有传了 <code>param</code> 才会走模板替换<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/DefaultChatClientUtils.java:66">DefaultChatClientUtils.java:66</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">最容易踩的坑：提示词里写了 JSON 示例</span>
+          <p>
+            只要这段文本经过 <code>{...}</code> 渲染器，<code>{"name": "x"}</code> 里的 <code>{"name"...}</code>
+            就会被当成占位符；变量缺失时抛的是 <code>IllegalStateException</code>（
+            <code>Not all variables were replaced in the template...</code>）。两种解法：用反斜杠转义成
+            <code>\{</code> / <code>\}</code>，或者换分隔符。
+          </p>
+        </div>
+        <pre data-lang="java" data-file="换成 &lt; &gt; 分隔符">ChatClient chatClient = ChatClient.builder(chatModel)
+        .defaultTemplateRenderer(StTemplateRenderer.builder()
+                .startDelimiterToken('&lt;')
+                .endDelimiterToken('&gt;')
+                .build())
+        .build();</pre>
+        <p class="src-line">
+          <code>defaultTemplateRenderer</code> 在 Builder 上<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:525">ChatClient.java:525</span>；
+          换成 <code>&lt; &gt;</code> 后 JSON 里的花括号就不再是特殊字符。
+        </p>
+
+        <h2 id="entity">entity() 的完整调用链</h2>
+        <p>把 02 章的一行代码展开，实际发生的是这五步：</p>
+        <div class="steps">
+          <li>
+            <span class="sh">① 新建 Converter</span>
+            <div>
+              <code>entity(Class&lt;T&gt;)</code> 内部执行 <code>new BeanOutputConverter&lt;&gt;(type)</code>，构造时就把 JSON Schema
+              生成好了。<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/DefaultChatClient.java:567">DefaultChatClient.java:567</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">② 把格式指令写进上下文</span>
+            <div>
+              <code>OUTPUT_FORMAT</code> 的值就是 <code>converter.getFormat()</code>，上下文 key 是
+              <code>spring.ai.chat.client.output.format</code>。
+              <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/DefaultChatClient.java:598">DefaultChatClient.java:598</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">③ 调用模型时追加到用户消息</span>
+            <div>
+              <code>ChatModelCallAdvisor</code> 把格式指令拼在用户消息正文后面（<strong>不是 system</strong>），
+              然后才调用 <code>ChatModel</code>。
+              <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ChatModelCallAdvisor.java:66">ChatModelCallAdvisor.java:66</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">④ 清洗响应文本</span>
+            <div>
+              默认清洗链是「去空白 → 去思考标签 → 去 markdown 代码围栏 → 再去空白」。
+              <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/converter/BeanOutputConverter.java:163">BeanOutputConverter.java:163</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">⑤ Jackson 反序列化</span>
+            <div>
+              用 <code>JsonMapper</code> 转成目标类型；<code>FAIL_ON_UNKNOWN_PROPERTIES</code> 默认关闭，模型多返回字段不会炸。
+              <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/converter/BeanOutputConverter.java:203">BeanOutputConverter.java:203</span>
+            </div>
+          </li>
+        </div>
+        <p>第 ③ 步拼出来的格式指令长这样（模板来自 <code>BeanOutputConverter</code>）：</p>
+        <pre data-lang="text" data-file="实际追加到用户消息末尾的内容">Your response should be in JSON format.
+Do not include any explanations, only provide a RFC8259 compliant JSON response following this format without deviation.
+Do not include markdown code blocks in your response.
+Remove the ```json markdown from the output.
+Here is the JSON Schema instance your output must adhere to:
+```{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object", ...}```</pre>
+        <p class="src-line">
+          指令模板见 <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/converter/BeanOutputConverter.java:214">BeanOutputConverter.java:214</span>；
+          Schema 由 <code>JsonSchemaGenerator.generateForType(type)</code> 生成。
+        </p>
+
+        <h2 id="native">原生结构化输出：为什么 DeepSeek 用不上</h2>
+        <p>
+          <code>entity(T.class, spec -&gt; spec.useProviderStructuredOutput())</code> 的语义是「把 Schema 作为
+          API 参数发给厂商，让厂商在解码阶段保证 JSON」。它要生效，需要同时满足两个条件：
+        </p>
+        <ol>
+          <li>开关打开了，上下文里有 <code>STRUCTURED_OUTPUT_NATIVE</code> 且写入了 Schema；</li>
+          <li>
+            本次请求的 <code>ChatOptions</code> 实现了 <code>StructuredOutputChatOptions</code> 接口——
+            <code>ChatModelCallAdvisor</code> 用 <code>instanceof</code> 判断，不满足就<strong>静默走回提示词方案</strong>。
+          </li>
+        </ol>
+        <pre data-lang="java" data-file="ChatModelCallAdvisor 的判定">if (usesNativeStructuredOutput && StringUtils.hasText(outputSchema)
+        && chatRequest.prompt().getOptions() instanceof StructuredOutputChatOptions structuredOutputChatOptions) {
+    var augmentedOptions = structuredOutputChatOptions.mutate().outputSchema(outputSchema).build();
+    // ... 用原生 schema 调用
+}
+// 否则：把 outputFormat 追加到用户消息（提示词方案）</pre>
+        <p>
+          关键事实：<code>DeepSeekChatOptions</code> 实现的是 <code>ToolCallingChatOptions</code>，
+          <strong>没有</strong>实现 <code>StructuredOutputChatOptions</code>。所以在 DeepSeek 上打开这个开关，
+          代码能编译、能运行、也不报错，但实际仍然走提示词约束。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th>Options 是否实现 <code>StructuredOutputChatOptions</code></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>OpenAI</td>
+                <td>是（<code>OpenAiChatOptions.java</code>）</td>
+              </tr>
+              <tr>
+                <td>Anthropic</td>
+                <td>是</td>
+              </tr>
+              <tr>
+                <td>Ollama</td>
+                <td>是</td>
+              </tr>
+              <tr>
+                <td>Google GenAI / Mistral / Bedrock Converse</td>
+                <td>是</td>
+              </tr>
+              <tr>
+                <td><strong>DeepSeek</strong></td>
+                <td><strong>否</strong>，只会走提示词方案</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          <code>DeepSeekChatOptions</code> 的声明<span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/DeepSeekChatOptions.java:44">DeepSeekChatOptions.java:44</span>；
+          判定分支<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ChatModelCallAdvisor.java:81">ChatModelCallAdvisor.java:81</span>。
+        </p>
+        <div class="callout tip">
+          <span class="ct">所以在 DeepSeek 上该怎么写</span>
+          <p>
+            不要指望 <code>useProviderStructuredOutput()</code>，把力气花在提示词上：字段含义写清楚、给一个示例、
+            要求「只输出 JSON」。再加上下一节的 <code>validateSchema()</code>，稳定性比换开关高得多。
+          </p>
+        </div>
+
+        <h2 id="validate">validateSchema：失败自动重试的三层细节</h2>
+        <p>
+          <code>validateSchema()</code> 会往 Advisor 链里<strong>压入</strong>一个
+          <code>StructuredOutputValidationAdvisor</code>，它在模型返回后做 JSON Schema 校验：
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>细节</th>
+                <th>行为</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>默认重试次数</td>
+                <td><code>maxRepeatAttempts = 3</code>，加上首次一共最多 4 次请求</td>
+              </tr>
+              <tr>
+                <td>校验标准</td>
+                <td>JSON Schema <strong>DRAFT 2020_12</strong></td>
+              </tr>
+              <tr>
+                <td>失败后怎么改</td>
+                <td>把「Output JSON validation failed because of: ...」追加到用户消息，重新调用</td>
+              </tr>
+              <tr>
+                <td>Advisor 顺序</td>
+                <td><code>LOWEST_PRECEDENCE - 2000</code>，保证它包在工具循环外层</td>
+              </tr>
+              <tr>
+                <td>工具调用轮次</td>
+                <td>不校验（没有文本可校验），直接放行给工具 Advisor</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre data-lang="java" data-file="带校验的调用">Movie movie = chatClient.prompt()
+        .user("推荐一部科幻电影")
+        .call()
+        .entity(Movie.class, spec -&gt; spec.validateSchema());</pre>
+        <p class="src-line">
+          校验循环<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/StructuredOutputValidationAdvisor.java:131">StructuredOutputValidationAdvisor.java:131</span>，
+          默认重试次数<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/StructuredOutputValidationAdvisor.java:247">StructuredOutputValidationAdvisor.java:247</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">重试是「再花一次钱」</span>
+          <p>
+            最坏情况下一次 <code>entity()</code> 会发 4 次请求、按 4 次计费。对高并发接口，建议只在关键字段上开校验，
+            或者把「格式要求」写得更死，减少第一次就失败的概率。
+          </p>
+        </div>
+
+        <h2 id="alternatives">不止 Bean：List / Map / 自定义 Converter</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>需求</th>
+                <th>写法</th>
+                <th>底层</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>单个对象</td>
+                <td><code>.entity(Movie.class)</code></td>
+                <td><code>BeanOutputConverter</code></td>
+              </tr>
+              <tr>
+                <td>泛型集合</td>
+                <td><code>.entity(new ParameterizedTypeReference&lt;List&lt;Movie&gt;&gt;() {})</code></td>
+                <td><code>BeanOutputConverter</code>（保留泛型）</td>
+              </tr>
+              <tr>
+                <td>只要字符串列表</td>
+                <td><code>.entity(new ListOutputConverter(conversionService))</code></td>
+                <td>提示词要求逗号分隔，再切分</td>
+              </tr>
+              <tr>
+                <td>任意 Map</td>
+                <td><code>.entity(new MapOutputConverter())</code></td>
+                <td>直接解析 JSON 对象</td>
+              </tr>
+              <tr>
+                <td>特殊格式（CSV / XML）</td>
+                <td>自己实现 <code>StructuredOutputConverter&lt;T&gt;</code></td>
+                <td>你控制 <code>getFormat()</code> 与 <code>convert()</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          自定义 Converter 的价值在于：<strong><code>getFormat()</code> 决定提示词，<code>convert()</code> 决定解析</strong>。
+          框架只负责把 <code>getFormat()</code> 塞进请求，剩下的完全由你控制。这也是接自研协议时最干净的扩展点。
+        </p>
+
+        <h2 id="cheatsheet">速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>写法 / 默认值</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>模板占位符</td>
+                <td><code>{name}</code>，配合 <code>.param("name", value)</code></td>
+              </tr>
+              <tr>
+                <td>换分隔符</td>
+                <td><code>StTemplateRenderer.builder().startDelimiterToken('&lt;').endDelimiterToken('&gt;')</code></td>
+              </tr>
+              <tr>
+                <td>取对象</td>
+                <td><code>.call().entity(X.class)</code></td>
+              </tr>
+              <tr>
+                <td>取泛型集合</td>
+                <td><code>.entity(new ParameterizedTypeReference&lt;List&lt;X&gt;&gt;() {})</code></td>
+              </tr>
+              <tr>
+                <td>要元数据 + 对象</td>
+                <td><code>.call().responseEntity(X.class)</code></td>
+              </tr>
+              <tr>
+                <td>开启校验重试</td>
+                <td><code>spec -&gt; spec.validateSchema()</code>（最多 4 次请求）</td>
+              </tr>
+              <tr>
+                <td>原生结构化输出</td>
+                <td><code>spec -&gt; spec.useProviderStructuredOutput()</code>（要求厂商支持）</td>
+              </tr>
+              <tr>
+                <td>未知字段</td>
+                <td>默认忽略，不会抛异常</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">模板里的 JSON 示例把请求搞崩了</span>
+          <p>
+            <strong>因为</strong>默认分隔符就是 <code>{</code> / <code>}</code>，JSON 的 <code>{</code> 被当成变量起点。
+            <strong>改成</strong>用反斜杠转义成 <code>\{</code> / <code>\}</code>，或换 <code>&lt; &gt;</code> 分隔符。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">在 DeepSeek 上开了 <code>useProviderStructuredOutput()</code> 却没有任何变化</span>
+          <p>
+            <strong>因为</strong>DeepSeek 的 Options 没实现 <code>StructuredOutputChatOptions</code>，框架静默退回提示词方案。
+            <strong>改成</strong>删掉这个开关，改用 <code>validateSchema()</code> + 更明确的字段说明。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">字段名对不上，解析出来是 <code>null</code> 而不是报错</span>
+          <p>
+            <strong>因为</strong>默认关闭了 <code>FAIL_ON_UNKNOWN_PROPERTIES</code>，模型写错的 key 会被忽略。
+            <strong>改成</strong>用 <code>@JsonProperty("snake_case_name")</code> 显式对齐，或在 schema 描述里写清字段名。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">模型返回了 ```json 代码块</span>
+          <p>
+            <strong>因为</strong>有些模型习惯包一层 markdown。<strong>框架已处理</strong>：默认清洗链会去掉代码围栏。
+            但如果你自己 <code>new ObjectMapper().readValue(...)</code>，就要自己剥。
+          </p>
+        </div>
+        <div class="callout tip">
+          <span class="ct">让 schema 更「像人话」</span>
+          <p>
+            在 record 的字段上加注释不会进 schema 描述。想让模型理解字段含义，最有效的做法是在 <code>getFormat()</code>
+            之外再补一句自然语言说明，例如「<code>year</code> 是上映年份，不是故事发生年份」。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li><code>entity(Movie.class)</code> 的格式指令最终加在了 system 消息还是 user 消息上？</li>
+          <li>为什么 <code>useProviderStructuredOutput()</code> 在有些模型上「按了没用」却不报错？</li>
+          <li><code>validateSchema()</code> 最坏情况下一次调用会发几次模型请求？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把 <code>Movie</code> 改成嵌套结构（<code>record Movie(String title, Director director)</code>），观察生成的 schema 变化。</li>
+          <li>在 user 提示词里故意写一个 JSON 示例，复现模板报错，再用两种方式修好。</li>
+          <li>把 <code>validateSchema()</code> 打开，把 <code>year</code> 改成字符串年份，观察重试日志与最终结果。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章「04 流式与 SSE」会把 02 章的 <code>stream()</code> 拆到背压与连接生命周期层面；
+          如果你更关心多轮对话，也可以直接跳到「05 多轮记忆」。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

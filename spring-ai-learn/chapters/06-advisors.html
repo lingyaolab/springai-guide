@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 Advisor 机制：order 的大小与内外层关系、BaseAdvisor 的 before/after、流式下 after 何时触发、如何短路、自定义审计 Advisor、内置 Advisor 顺序表与递归。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="06 Advisor 机制：把横切逻辑插进对话 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="order 与内外层、before/after、流式差异、短路、自定义 Advisor、内置顺序表与递归。" />
+    <title>06 Advisor 机制：把横切逻辑插进对话 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="06-advisors" data-root="..">
+    <main>
+      <article class="article">
+        <h1>06 · Advisor 机制</h1>
+        <p class="lede">
+          Advisor 是 Spring AI 的<strong>中间件</strong>：日志、记忆、RAG、工具循环、结构化输出校验，全都是 Advisor。
+          理解它只需要抓住三件事：<strong>order 决定谁在外面</strong>、<strong>before/after 决定你能改哪一段</strong>、
+          <strong>流式下 after 只触发一次</strong>。这一章把这三件事讲透，然后手写一个。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>看懂 order 数值与「内层/外层」的对应关系，能推出记忆、工具、RAG 的相对位置</li>
+          <li>用 <code>BaseAdvisor</code> 写一个审计 Advisor，并解释流式下 <code>after</code> 为什么只跑一次</li>
+          <li>知道什么时候必须直接实现 <code>CallAdvisor</code>（短路），而不能用 <code>BaseAdvisor</code></li>
+          <li>说清工具循环为什么能「递归」穿过同一条链，以及如何避免重复注册</li>
+        </ul>
+
+        <h2 id="why">先说为什么：横切逻辑不该散落在业务里</h2>
+        <p>
+          没有 Advisor，你会在每个 <code>chatClient.prompt()</code> 前后手写：读记忆、拼 RAG、记日志、算耗时、
+          校验 JSON、执行工具。这些逻辑和「问什么问题」无关，却要重复几十遍。Advisor 把它们抽成一层，
+          由框架按顺序套在模型调用外面。
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">外层 Advisor（order 小）</span>
+            <div class="ld">先执行 before，最后执行 after。适合做记忆、审计、全局兜底。</div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">内层 Advisor（order 大）</span>
+            <div class="ld">后执行 before，先执行 after。适合做与单次模型调用强相关的逻辑。</div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">终点：ChatModelCallAdvisor / ChatModelStreamAdvisor</span>
+            <div class="ld">
+              order 是 <code>LOWEST_PRECEDENCE</code>，负责真正调用模型。
+              <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ChatModelStreamAdvisor.java:68">ChatModelStreamAdvisor.java:68</span>
+            </div>
+          </div>
+        </div>
+
+        <h2 id="chain">order：数值越小越靠外</h2>
+        <p>
+          <code>Advisor</code> 继承 <code>Ordered</code>，链在构建时用 <code>OrderComparator.sort</code> 升序排列。
+          所以「order 越小」= 越早进入 <code>before</code>、越晚执行 <code>after</code>，也就是越<strong>外层</strong>。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Advisor</th>
+                <th>order</th>
+                <th>位置</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>MessageChatMemoryAdvisor</code></td>
+                <td><code>MIN_VALUE + 200</code></td>
+                <td>最外层：记忆包住整个工具循环</td>
+              </tr>
+              <tr>
+                <td><code>ToolCallingAdvisor</code></td>
+                <td><code>MIN_VALUE + 300</code></td>
+                <td>记忆内层：它自己管中间的工具消息</td>
+              </tr>
+              <tr>
+                <td><code>SimpleLoggerAdvisor</code> / <code>QuestionAnswerAdvisor</code> / <code>SafeGuardAdvisor</code></td>
+                <td><code>0</code></td>
+                <td>工具循环<strong>内部</strong>：每轮循环都会经过</td>
+              </tr>
+              <tr>
+                <td><code>StructuredOutputValidationAdvisor</code></td>
+                <td><code>MAX_VALUE - 2000</code></td>
+                <td>靠近终点：只包住模型调用，便于重试</td>
+              </tr>
+              <tr>
+                <td><code>ChatModelCallAdvisor</code> / <code>ChatModelStreamAdvisor</code></td>
+                <td><code>MAX_VALUE</code></td>
+                <td>终点</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          记忆与工具的常量<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/api/Advisor.java:39">Advisor.java:39</span>、
+          <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ToolCallingAdvisor.java:75">ToolCallingAdvisor.java:75</span>；
+          排序发生在链构建时<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/DefaultAroundAdvisorChain.java:277">DefaultAroundAdvisorChain.java:277</span>。
+        </p>
+        <div class="callout">
+          <span class="ct">一个容易反直觉的推论</span>
+          <p>
+            因为 <code>SimpleLoggerAdvisor</code> 与 <code>QuestionAnswerAdvisor</code> 的 order 都是 0，它们位于工具
+            Advisor <strong>内侧</strong>。一次带工具的对话里，日志会记录每一轮模型调用，RAG 也会在每一轮重新检索。
+            这不是 bug，而是 order 的直接结果。
+          </p>
+        </div>
+        <p>
+          order 相同的 Advisor，按注册顺序执行（排序是稳定的）。所以不要依赖「都是 0 时谁先谁后」这种巧合——
+          需要确定的顺序就显式给不同的值。
+        </p>
+
+        <h2 id="base">BaseAdvisor：before / after 的默认骨架</h2>
+        <p>
+          大多数自定义 Advisor 只需要实现 <code>BaseAdvisor</code>，它把同步与流式的骨架都写好了，你只填两个方法：
+        </p>
+        <pre data-lang="java" data-file="BaseAdvisor 的同步默认实现">ChatClientRequest processed = before(request, chain);
+ChatClientResponse response = chain.nextCall(processed);
+return after(response, chain);</pre>
+        <p>
+          流式实现多了一步 <code>publishOn(scheduler)</code>（默认 <code>boundedElastic</code>），并且
+          <strong>只有当某个 chunk 带有 finish reason 时</strong>才调用 <code>after</code>：
+        </p>
+        <pre data-lang="java" data-file="流式下 after 的触发条件">chatClientResponseFlux.map(response -&gt; {
+    if (AdvisorUtils.onFinishReason().test(response)) {
+        response = after(response, streamAdvisorChain);
+    }
+    return response;
+})</pre>
+        <p class="src-line">
+          <code>adviseStream</code> 的默认骨架<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/api/BaseAdvisor.java:57">BaseAdvisor.java:57</span>；
+          finish reason 判定<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/AdvisorUtils.java:40">AdvisorUtils.java:40</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">流式下 <code>after</code> 的三个「不会」</span>
+          <p>
+            不会每个 chunk 都执行；流被取消时不会执行；流以错误结束时不会执行（错误路径走
+            <code>onErrorResume</code> 重新抛）。所以「在 after 里计费/写审计」在流式场景可能漏记，关键逻辑要同时覆盖
+            <code>doOnCancel</code> / <code>doOnError</code>。
+          </p>
+        </div>
+
+        <h2 id="short-circuit">短路：为什么 SafeGuard 不用 BaseAdvisor</h2>
+        <p>
+          <code>BaseAdvisor</code> 的 <code>before</code> 只能<strong>改请求</strong>，不能「不调用模型直接返回」。
+          想拦截请求并直接给出响应，必须自己实现 <code>CallAdvisor</code> / <code>StreamAdvisor</code>，选择不调用
+          <code>nextCall</code>：
+        </p>
+        <pre data-lang="java" data-file="SafeGuardAdvisor 的短路逻辑">public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
+    if (containsSensitiveWord(request)) {
+        return createFailureResponse(request);   // 不调 chain，模型根本不会被调用
+    }
+    return chain.nextCall(request);
+}</pre>
+        <p class="src-line">
+          短路实现<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/SafeGuardAdvisor.java:83">SafeGuardAdvisor.java:83</span>；
+          它同时实现了 <code>CallAdvisor</code> 与 <code>StreamAdvisor</code>，流式下返回一个单元素 <code>Flux</code>。
+        </p>
+        <div class="callout tip">
+          <span class="ct">「改请求」用 BaseAdvisor，「换结果」用 CallAdvisor</span>
+          <p>
+            想在用户问题前面加一句系统提示、改参数、加 metadata → <code>BaseAdvisor.before</code>。
+            想命中敏感词就返回固定话术、想走缓存命中直接返回 → 直接实现 <code>CallAdvisor</code>。
+          </p>
+        </div>
+
+        <h2 id="custom">手写一个：审计 Advisor</h2>
+        <p>
+          需求：记录每次调用的用户问题、耗时与 token 用量，放在记忆之后、工具之前（这样一次对话只记一条，
+          而不是每轮循环记一条）。
+        </p>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/AuditAdvisor.java">package com.example.demo;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.api.Advisor;
+import org.springframework.ai.chat.client.advisor.api.AdvisorChain;
+import org.springframework.ai.chat.client.advisor.api.BaseAdvisor;
+import org.springframework.ai.chat.model.ChatResponse;
+
+public class AuditAdvisor implements BaseAdvisor {
+
+    private static final Logger log = LoggerFactory.getLogger(AuditAdvisor.class);
+
+    private final ThreadLocal&lt;Long&gt; startedAt = new ThreadLocal&lt;&gt;();
+
+    @Override
+    public ChatClientRequest before(ChatClientRequest request, AdvisorChain chain) {
+        this.startedAt.set(System.currentTimeMillis());
+        log.info("question: {}", request.prompt().getLastUserOrToolResponseMessage().getText());
+        return request;
+    }
+
+    @Override
+    public ChatClientResponse after(ChatClientResponse response, AdvisorChain chain) {
+        long cost = System.currentTimeMillis() - this.startedAt.get();
+        ChatResponse chatResponse = response.chatResponse();
+        if (chatResponse != null) {
+            var usage = chatResponse.getMetadata().getUsage();
+            log.info("cost={}ms, tokens={}", cost, usage.getTotalTokens());
+        }
+        return response;
+    }
+
+    @Override
+    public int getOrder() {
+        // 记忆（+200）之后、工具（+300）之前
+        return Advisor.DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER + 50;
+    }
+}</pre>
+        <pre data-lang="java" data-file="注册">ChatClient chatClient = ChatClient.builder(chatModel)
+        .defaultAdvisors(
+                MessageChatMemoryAdvisor.builder(chatMemory).build(),
+                new AuditAdvisor())
+        .build();</pre>
+        <div class="callout warn">
+          <span class="ct"><code>ThreadLocal</code> 在流式下不可靠</span>
+          <p>
+            流式的 <code>before</code> 与 <code>after</code> 可能跑在 <code>boundedElastic</code> 的不同线程上。
+            示例为了简洁用了 <code>ThreadLocal</code>，生产代码应该把开始时间放进
+            <code>request.context()</code>（不可变 Map，随响应带回来），或直接用 Observation / Micrometer。
+          </p>
+        </div>
+
+        <h2 id="registration">注册方式与 per-call 参数</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>方式</th>
+                <th>作用范围</th>
+                <th>写法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>defaultAdvisors(...)</code></td>
+                <td>该客户端的所有请求</td>
+                <td><code>ChatClient.builder(m).defaultAdvisors(a1, a2).build()</code></td>
+              </tr>
+              <tr>
+                <td><code>advisors(...)</code></td>
+                <td>仅本次请求，追加到默认之后</td>
+                <td><code>.advisors(new XxxAdvisor())</code></td>
+              </tr>
+              <tr>
+                <td><code>advisors(Consumer&lt;AdvisorSpec&gt;)</code></td>
+                <td>设置参数而不是加 Advisor</td>
+                <td><code>.advisors(a -&gt; a.param("k", v))</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Advisor 是普通对象，<strong>不会</strong>因为声明成 <code>@Component</code> 就自动进入链——必须显式注册。
+          请求级参数通过 <code>request.context()</code> 传递，Advisor 用常量 key 读取（记忆 Advisor 读
+          <code>ChatMemory.CONVERSATION_ID</code>、RAG 读 <code>QuestionAnswerAdvisor.FILTER_EXPRESSION</code>）。
+        </p>
+        <p>
+          框架还提供两个预设参数：<code>AdvisorParams.ENABLE_NATIVE_STRUCTURED_OUTPUT</code> 与
+          <code>AdvisorParams.toolCallingAdvisorAutoRegister(false)</code>。后者用于「我想自己注册工具 Advisor」的场景。
+        </p>
+
+        <h2 id="builtins">内置 Advisor 一览</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Advisor</th>
+                <th>作用</th>
+                <th>默认 order</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>MessageChatMemoryAdvisor</code></td>
+                <td>读写会话历史</td>
+                <td><code>MIN + 200</code></td>
+              </tr>
+              <tr>
+                <td><code>ToolCallingAdvisor</code></td>
+                <td>工具循环（2.0 自动注册）</td>
+                <td><code>MIN + 300</code></td>
+              </tr>
+              <tr>
+                <td><code>SimpleLoggerAdvisor</code></td>
+                <td>打印请求与响应</td>
+                <td><code>0</code></td>
+              </tr>
+              <tr>
+                <td><code>SafeGuardAdvisor</code></td>
+                <td>敏感词拦截，直接返回固定话术</td>
+                <td><code>0</code></td>
+              </tr>
+              <tr>
+                <td><code>QuestionAnswerAdvisor</code></td>
+                <td>RAG 检索并拼上下文</td>
+                <td><code>0</code></td>
+              </tr>
+              <tr>
+                <td><code>StructuredOutputValidationAdvisor</code></td>
+                <td>JSON Schema 校验 + 重试</td>
+                <td><code>MAX - 2000</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="recursion">递归：工具循环如何穿过同一条链</h2>
+        <p>
+          <code>ToolCallingAdvisor</code> 执行完工具后，需要再问一次模型。它不是直接调 <code>ChatModel</code>，
+          而是调用 <code>callAdvisorChain.copy(this).nextCall(...)</code>——拿到「排在自己后面」的那段链重新走一遍。
+        </p>
+        <pre data-lang="java" data-file="链的复制">public CallAdvisorChain copy(CallAdvisor after) {
+    return this.copyAdvisorsAfter(this.getCallAdvisors(), after);
+}</pre>
+        <p>
+          这带来两个直接后果：① 排在工具 Advisor 内侧的日志、RAG、校验会<strong>每轮都执行</strong>；
+          ② 排在它外侧的记忆只会看到循环开始与结束，看不到中间的工具消息。这也是为什么「记忆放环内」要把 order
+          调到大于 <code>MIN + 300</code>。
+        </p>
+        <p class="src-line">
+          <code>copy</code> 的实现<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/DefaultAroundAdvisorChain.java:169">DefaultAroundAdvisorChain.java:169</span>；
+          工具循环里的重新进入<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ToolCallingAdvisor.java:167">ToolCallingAdvisor.java:167</span>。
+        </p>
+        <div class="callout tip">
+          <span class="ct">同一个 Advisor 实例会被复用</span>
+          <p>
+            Advisor 通常是无状态的单例。不要在实例字段里存「本次请求」的数据——并发请求会互相覆盖。
+            需要请求级状态就放 <code>context</code>，或者用 Reactor Context。
+          </p>
+        </div>
+
+        <h2 id="cheatsheet">速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>做法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>改请求 / 记日志</td>
+                <td>实现 <code>BaseAdvisor</code> 的 <code>before</code> / <code>after</code></td>
+              </tr>
+              <tr>
+                <td>拦截并直接返回</td>
+                <td>实现 <code>CallAdvisor</code>，不调 <code>nextCall</code></td>
+              </tr>
+              <tr>
+                <td>调整内外层</td>
+                <td>改 <code>getOrder()</code>；越小越外</td>
+              </tr>
+              <tr>
+                <td>只在某些请求生效</td>
+                <td>用 <code>.advisors(...)</code> 而不是 default</td>
+              </tr>
+              <tr>
+                <td>传请求级参数</td>
+                <td><code>.advisors(a -&gt; a.param(key, value))</code></td>
+              </tr>
+              <tr>
+                <td>流式下做清理</td>
+                <td>同时处理 <code>doOnCancel</code> / <code>doOnError</code></td>
+              </tr>
+              <tr>
+                <td>禁用工具 Advisor 自动注册</td>
+                <td><code>AdvisorParams.toolCallingAdvisorAutoRegister(false)</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">日志打了两遍 / 工具执行了两次</span>
+          <p>
+            <strong>因为</strong>Advisor 被注册了两次：默认 + 请求级各一次，或者工具 Advisor 自动注册之外又手动加了一个。
+            <strong>改成</strong>统一在一个地方注册，工具 Advisor 交给框架。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">RAG 在带工具的对话里检索了好几次</span>
+          <p>
+            <strong>因为</strong><code>QuestionAnswerAdvisor</code> 的 order 是 0，位于工具 Advisor 内侧，工具循环每轮
+            都会重新进链。<strong>改成</strong>把 order 调到小于 <code>MIN + 300</code>，或者接受这个行为（每轮按最新
+            上下文重新检索）。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">流式接口里 <code>after</code> 没执行，计费少了一条</span>
+          <p>
+            <strong>因为</strong><code>BaseAdvisor</code> 只在收到 finish reason 时调 <code>after</code>；取消或异常
+            不会触发。<strong>改成</strong>关键逻辑放到 <code>doFinally</code> 或观测层，别只依赖 <code>after</code>。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">并发下 Auditor 记录的耗时忽大忽小</span>
+          <p>
+            <strong>因为</strong>把开始时间存在 Advisor 的实例字段或 <code>ThreadLocal</code> 里，而 Advisor 是共享单例、
+            流式还会换线程。<strong>改成</strong>放到请求 <code>context</code> 里，或用 Observation。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>order 是 <code>-2147483348</code> 的 Advisor，和 order 是 <code>0</code> 的相比，谁在外面？</li>
+          <li>为什么「命中敏感词直接返回」不能只实现 <code>BaseAdvisor.before</code>？</li>
+          <li>工具循环第二轮时，order 为 0 的 Advisor 会再次执行吗？为什么？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>写一个 <code>RequestIdAdvisor</code>：before 里生成 UUID 放进 context，after 里打出这个 ID。</li>
+          <li>把 <code>AuditAdvisor</code> 的 order 改成 <code>MIN + 350</code>，观察它从「每次请求一条日志」变成「每轮循环一条」。</li>
+          <li>实现一个基于 <code>CallAdvisor</code> 的简单缓存：同一个问题第二次直接返回上次结果，不调用模型。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          Advisor 这条线到这里就闭环了。接下来是「08 Embedding 与向量库选型」：把第 07 章的内存向量库换成真实存储，
+          并解释维度、索引与相似度度量。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

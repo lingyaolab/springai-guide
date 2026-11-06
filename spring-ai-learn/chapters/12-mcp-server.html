@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 MCP 服务端：@McpTool / @McpResource / @McpPrompt、三种服务协议、Streamable HTTP 端点、注解扫描、Spring Security 与限流。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="12 MCP 服务端：把自己的能力暴露出去 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="@McpTool 注解、三种服务协议、Streamable HTTP 端点、注解扫描、鉴权与限流。" />
+    <title>12 MCP 服务端：把自己的能力暴露出去 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="12-mcp-server" data-root="..">
+    <main>
+      <article class="article">
+        <h1>12 · MCP 服务端</h1>
+        <p class="lede">
+          上一章是把外部工具接进来，这一章反过来：把你已有的 Spring 服务暴露成 MCP 工具，让别的 Agent、IDE 或
+          同事的客户端直接调用。核心只有两个注解，但<strong>协议选择、端点、鉴权与暴露面</strong>需要一次想清楚。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>@McpTool</code> 把一个 Service 方法暴露成 MCP 工具，并用 Inspector 验证</li>
+          <li>在 STREAMABLE / SSE / STATELESS 与 stdio 之间做出选择</li>
+          <li>说清注解扫描的生效条件，以及为什么有时「工具列表是空的」</li>
+          <li>给 MCP 端点加上鉴权、限流与只读约束，而不是把内部接口裸奔出去</li>
+        </ul>
+
+        <h2 id="why">先说为什么：一次实现，多处消费</h2>
+        <p>
+          你写的订单查询、工单创建、报表导出，本来只服务自己的前端。暴露成 MCP 之后，任何支持 MCP 的客户端
+          （IDE、桌面 Agent、别的团队的聊天机器人）都能发现并调用它们，而不需要你为每个客户端写一套 SDK。
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">你的 Spring Bean</span>
+            <div class="ld">业务逻辑、事务、权限校验都还在这里，MCP 只是多了一层协议入口。</div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">注解 + 扫描器</span>
+            <div class="ld">
+              启动时扫描 <code>@McpTool</code> / <code>@McpResource</code> / <code>@McpPrompt</code>，生成 MCP 能力清单。
+              <span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-server-common/src/main/java/org/springframework/ai/mcp/server/common/autoconfigure/annotations/McpServerAnnotationScannerProperties.java:27">McpServerAnnotationScannerProperties.java:27</span>
+            </div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">传输层</span>
+            <div class="ld">WebMvc / WebFlux 暴露 HTTP 端点，或 stdio 作为子进程被客户端拉起。</div>
+          </div>
+        </div>
+
+        <h2 id="protocol">四种运行方式：先选协议</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>方式</th>
+                <th>开启方式</th>
+                <th>适合</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Streamable HTTP（默认）</td>
+                <td><code>spring-ai-starter-mcp-server-webmvc</code> 或 <code>-webflux</code>，<code>protocol=STREAMABLE</code></td>
+                <td>对外提供 HTTP 服务，新版客户端</td>
+              </tr>
+              <tr>
+                <td>SSE</td>
+                <td>同上，<code>protocol=SSE</code></td>
+                <td>只支持旧规范的客户端</td>
+              </tr>
+              <tr>
+                <td>STATELESS</td>
+                <td><code>protocol=STATELESS</code></td>
+                <td>无状态、易水平扩展，但不能用需要会话的能力</td>
+              </tr>
+              <tr>
+                <td>stdio</td>
+                <td><code>spring-ai-starter-mcp-server</code> + <code>stdio=true</code></td>
+                <td>作为本地子进程被 IDE / 客户端拉起</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          协议默认值与枚举<span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-server-common/src/main/java/org/springframework/ai/mcp/server/common/autoconfigure/properties/McpServerProperties.java:100">McpServerProperties.java:100</span>；
+          stdio 默认关闭<span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-server-common/src/main/java/org/springframework/ai/mcp/server/common/autoconfigure/properties/McpServerProperties.java:65">McpServerProperties.java:65</span>。
+        </p>
+        <div class="callout tip">
+          <span class="ct">默认选 Streamable HTTP</span>
+          <p>
+            它是新规范推荐的方式：普通 HTTP 语义、容易过网关、支持流式响应。只有在对接老客户端时才开 SSE；
+            两者不要同时暴露给同一批用户，否则排障时很难判断问题出在哪条链路。
+          </p>
+        </div>
+
+        <h2 id="minimal">最小可跑：把订单查询暴露出去</h2>
+        <pre data-lang="xml" data-file="pom.xml">    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.ai&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-ai-starter-mcp-server-webmvc&lt;/artifactId&gt;
+    &lt;/dependency&gt;</pre>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/OrderMcpTools.java">package com.example.demo;
+
+import org.springframework.ai.mcp.annotation.McpTool;
+import org.springframework.ai.mcp.annotation.McpToolParam;
+import org.springframework.stereotype.Service;
+
+@Service
+class OrderMcpTools {
+
+    private final OrderRepository orders;
+
+    OrderMcpTools(OrderRepository orders) {
+        this.orders = orders;
+    }
+
+    @McpTool(description = "按订单号查询订单状态与金额，只读")
+    OrderView query(
+            @McpToolParam(description = "订单号，例如 SO-20261106-001") String orderNo) {
+        return this.orders.findViewByOrderNo(orderNo);
+    }
+}</pre>
+        <pre data-lang="yaml" data-file="application.yml">spring:
+  ai:
+    mcp:
+      server:
+        name: order-mcp
+        version: 1.0.0
+        instructions: "订单查询服务，只提供只读查询"
+        protocol: STREAMABLE
+        streamable-http:
+          mcp-endpoint: /mcp</pre>
+        <p>
+          启动后 MCP 端点是 <code>POST http://localhost:8080/mcp</code>。用官方 Inspector 验证：
+        </p>
+        <pre data-lang="bash" data-file="终端">npx @modelcontextprotocol/inspector
+# Transport 选 Streamable HTTP，URL 填 http://localhost:8080/mcp
+# 连接后能看到 tools/list 里有 query</pre>
+        <p class="src-line">
+          注解字段<span class="src" data-src="mcp/mcp-annotations/src/main/java/org/springframework/ai/mcp/annotation/McpTool.java:42">McpTool.java:42</span>；
+          默认端点<span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-server-common/src/main/java/org/springframework/ai/mcp/server/common/autoconfigure/properties/McpServerStreamableHttpProperties.java:36">McpServerStreamableHttpProperties.java:36</span>。
+        </p>
+
+        <h2 id="annotations">三类能力：Tool / Resource / Prompt</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>注解</th>
+                <th>是什么</th>
+                <th>客户端怎么用</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>@McpTool</code></td>
+                <td>可执行的函数，有参数 schema</td>
+                <td>模型决定调用，等价于本地 <code>@Tool</code></td>
+              </tr>
+              <tr>
+                <td><code>@McpResource</code></td>
+                <td>可读取的数据（文件、配置、记录）</td>
+                <td>客户端按 URI 读取，不经过模型决策</td>
+              </tr>
+              <tr>
+                <td><code>@McpPrompt</code></td>
+                <td>预置的提示词模板</td>
+                <td>客户端选择模板并填参数</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre data-lang="java" data-file="资源与提示词">@McpResource(uri = "order://policy/refund", name = "退款政策")
+String refundPolicy() {
+    return Files.readString(Path.of("docs/refund-policy.md"));
+}
+
+@McpPrompt(name = "order-summary", description = "生成订单摘要")
+String orderSummary(@McpToolParam(description = "订单号") String orderNo) {
+    return "请总结订单 " + orderNo + " 的状态、金额与风险点。";
+}</pre>
+        <div class="callout">
+          <span class="ct">Tool 与 Resource 的分工</span>
+          <p>
+            Tool 会被模型「自主决定」调用，参数由模型填，风险更高；Resource 是客户端主动读取的固定内容，
+            更像「把文档挂出去」。能用 Resource 表达的内容，不要做成 Tool。
+          </p>
+        </div>
+        <p>
+          <code>@McpTool</code> 还支持给客户端看的提示：<code>readOnlyHint</code>、<code>destructiveHint</code>、
+          <code>idempotentHint</code>。它们只是<strong>提示</strong>，不是强制约束，真正的权限仍要在服务端校验。
+        </p>
+
+        <h2 id="scan">注解扫描：为什么工具列表是空的</h2>
+        <p>
+          扫描器默认开启（<code>spring.ai.mcp.server.annotation-scanner.enabled=true</code>），但它只扫描
+          <strong>Spring 容器里的 Bean</strong>。以下情况会导致「连上了，但一个工具都没有」：
+        </p>
+        <ul>
+          <li>方法所在的类没有 <code>@Component</code> / <code>@Service</code>，没进容器；</li>
+          <li>用了 <code>new</code> 创建对象，而不是注入；</li>
+          <li>只引了 <code>spring-ai-starter-mcp-server</code>（stdio 版），却用 HTTP 客户端去连；</li>
+          <li>方法不是 <code>public</code>，或参数类型无法生成 schema。</li>
+        </ul>
+        <p class="src-line">
+          扫描开关<span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-server-common/src/main/java/org/springframework/ai/mcp/server/common/autoconfigure/annotations/McpServerAnnotationScannerProperties.java:29">McpServerAnnotationScannerProperties.java:29</span>。
+        </p>
+
+        <h2 id="config">服务端配置一览</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>配置项</th>
+                <th>默认值</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>spring.ai.mcp.server.enabled</code></td>
+                <td><code>true</code></td>
+                <td>总开关</td>
+              </tr>
+              <tr>
+                <td><code>...server.name</code> / <code>version</code></td>
+                <td><code>mcp-server</code> / <code>1.0.0</code></td>
+                <td>服务标识，客户端会展示</td>
+              </tr>
+              <tr>
+                <td><code>...server.instructions</code></td>
+                <td>无</td>
+                <td>告诉客户端「这个服务是干什么的」</td>
+              </tr>
+              <tr>
+                <td><code>...server.protocol</code></td>
+                <td><code>STREAMABLE</code></td>
+                <td><code>SSE</code> / <code>STREAMABLE</code> / <code>STATELESS</code></td>
+              </tr>
+              <tr>
+                <td><code>...server.stdio</code></td>
+                <td><code>false</code></td>
+                <td>是否启用标准输入输出传输</td>
+              </tr>
+              <tr>
+                <td><code>...server.expose-mcp-client-tools</code></td>
+                <td><code>false</code></td>
+                <td>是否把下游 MCP 工具再暴露出去（慎用）</td>
+              </tr>
+              <tr>
+                <td><code>...server.request-timeout</code></td>
+                <td><code>20s</code></td>
+                <td>等待处理结果的超时</td>
+              </tr>
+              <tr>
+                <td><code>...server.streamable-http.mcp-endpoint</code></td>
+                <td><code>/mcp</code></td>
+                <td>Streamable HTTP 路径</td>
+              </tr>
+              <tr>
+                <td><code>...server.streamable-http.keep-alive-interval</code></td>
+                <td>不设置</td>
+                <td>长连接保活间隔</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          前缀与默认值<span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-server-common/src/main/java/org/springframework/ai/mcp/server/common/autoconfigure/properties/McpServerProperties.java:50">McpServerProperties.java:50</span>；
+          <code>expose-mcp-client-tools</code> 默认关闭<span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-server-common/src/main/java/org/springframework/ai/mcp/server/common/autoconfigure/properties/McpServerProperties.java:106">McpServerProperties.java:106</span>。
+        </p>
+
+        <h2 id="security">鉴权与限流：别把内部接口裸奔出去</h2>
+        <p>
+          MCP 端点和普通 HTTP 接口没有本质区别，Spring Security 的过滤器链对它同样生效。最小做法：
+        </p>
+        <pre data-lang="java" data-file="只允许带 token 的请求访问 /mcp">@Bean
+SecurityFilterChain mcpSecurity(HttpSecurity http) throws Exception {
+    http
+        .securityMatcher("/mcp/**")
+        .authorizeHttpRequests(auth -&gt; auth.anyRequest().hasRole("MCP_CLIENT"))
+        .oauth2ResourceServer(oauth2 -&gt; oauth2.jwt(Customizer.withDefaults()))
+        .csrf(csrf -&gt; csrf.disable());   // MCP 客户端通常不带 CSRF token
+    return http.build();
+}</pre>
+        <div class="callout warn">
+          <span class="ct">三件必须做的事</span>
+          <p>
+            ① <strong>鉴权</strong>：谁能连；② <strong>授权</strong>：哪个客户端能调哪些工具（按角色或工具名过滤）；
+            ③ <strong>限流与审计</strong>：每次工具调用记录调用方、参数摘要、耗时、结果状态，防止被当成免费算力或
+            数据导出通道。
+          </p>
+        </div>
+        <p>
+          还要限制<strong>暴露面</strong>：只把确有必要的方法加 <code>@McpTool</code>；写操作单独做幂等键；
+          返回结果做分页与字段裁剪，别把整个实体图丢回去——它最终会进入某个模型的上下文。
+        </p>
+
+        <h2 id="cheatsheet">速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>写法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>暴露工具</td>
+                <td><code>@McpTool(description = "...")</code></td>
+              </tr>
+              <tr>
+                <td>描述参数</td>
+                <td><code>@McpToolParam(description = "...")</code></td>
+              </tr>
+              <tr>
+                <td>暴露资源</td>
+                <td><code>@McpResource(uri = "...", name = "...")</code></td>
+              </tr>
+              <tr>
+                <td>暴露提示词</td>
+                <td><code>@McpPrompt(name = "...")</code></td>
+              </tr>
+              <tr>
+                <td>HTTP 服务</td>
+                <td><code>spring-ai-starter-mcp-server-webmvc</code> / <code>-webflux</code></td>
+              </tr>
+              <tr>
+                <td>本地 stdio 服务</td>
+                <td><code>spring-ai-starter-mcp-server</code> + <code>stdio=true</code></td>
+              </tr>
+              <tr>
+                <td>改端点</td>
+                <td><code>...server.streamable-http.mcp-endpoint=/mcp</code></td>
+              </tr>
+              <tr>
+                <td>关扫描</td>
+                <td><code>...server.annotation-scanner.enabled=false</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">Inspector 连上了，但工具列表为空</span>
+          <p>
+            <strong>因为</strong>方法所在的类不是 Bean，或引错 starter。<strong>改成</strong>确认类上有
+            <code>@Service</code>、方法 <code>public</code> 且参数能生成 schema；HTTP 场景必须用
+            <code>-webmvc</code> / <code>-webflux</code> 的 starter。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">stdio 模式客户端解析失败</span>
+          <p>
+            <strong>因为</strong>应用把日志打到了 stdout，和协议帧混在一起。<strong>改成</strong>日志输出到 stderr，
+            或使用文件日志；stdout 只留给 MCP 协议。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">浏览器/客户端访问 <code>/mcp</code> 返回 401 或跳登录页</span>
+          <p>
+            <strong>因为</strong>Spring Security 默认拦截了所有路径。<strong>改成</strong>为 <code>/mcp/**</code>
+            配置明确的认证方式，并关闭对无状态客户端不友好的 CSRF。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">老客户端连不上</span>
+          <p>
+            <strong>因为</strong>默认协议是 Streamable HTTP，老客户端只会 SSE。<strong>改成</strong>临时设
+            <code>protocol=SSE</code>，并规划客户端升级。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">打开了 <code>expose-mcp-client-tools</code> 后出现奇怪的递归调用</span>
+          <p>
+            <strong>因为</strong>本服务既当客户端又当服务端，把下游工具再暴露，形成环。<strong>改成</strong>保持默认
+            <code>false</code>，需要透传时显式设计白名单。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>Tool、Resource、Prompt 三类能力，哪一类会让模型自主决定调用？</li>
+          <li>为什么注解扫描器找不到你写的 <code>@McpTool</code> 方法？列出至少两个原因。</li>
+          <li>把内部接口暴露成 MCP 之后，哪三件事必须在服务端补上？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>用 <code>spring-ai-starter-mcp-server-webmvc</code> 暴露两个只读工具，用 Inspector 的 tools/list 与 tools/call 各验证一次。</li>
+          <li>加一个 <code>@McpResource</code> 返回一段 Markdown，确认客户端能按 URI 读取。</li>
+          <li>接入 Spring Security，给 <code>/mcp/**</code> 加 Bearer Token，验证不带 token 时的状态码。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章「13 可观测性与测试」会把前面所有能力串起来：怎么在不调用真实模型的情况下测工具与 RAG，
+          以及怎么用 Observation 看清一次请求到底慢在哪。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

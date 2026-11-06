@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Spring AI 2.0.2 术语表：ChatModel、ChatClient、Advisor、ChatMemory、Embedding、VectorStore、RAG、Tool Calling、MCP 等核心词的中英对照与一句话直觉。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="A 术语表：中英对照 + 一句话直觉 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="核心术语的中英对照、一句话直觉与首次出现章节。" />
+    <title>A 术语表：中英对照 + 一句话直觉 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="glossary" data-root="..">
+    <main>
+      <article class="article">
+        <h1>附录 A · 术语表</h1>
+        <p class="lede">
+          名字只是索引，直觉才是能用的东西。这一页按主题分组，每个词给一句「它到底解决什么问题」，并标出第一次系统讲它的章节。
+        </p>
+
+        <h2 id="how">怎么用这张表</h2>
+        <p>
+          读正文时遇到不熟的词，回来查一句直觉；不要试图背定义。带 ★ 的是必须能脱口而出的，
+          说不清它们，后面章节会一直卡。
+        </p>
+
+        <h2 id="chat">对话与模型</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>术语</th>
+                <th>中文</th>
+                <th>一句话直觉</th>
+                <th>章</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>ChatModel ★</td>
+                <td>对话模型</td>
+                <td>只承诺「给 Prompt 返回 ChatResponse」的接口；换厂商只换实现</td>
+                <td>02</td>
+              </tr>
+              <tr>
+                <td>ChatClient ★</td>
+                <td>对话客户端</td>
+                <td>面向业务的门面：模板、记忆、RAG、工具循环都挂在它后面</td>
+                <td>02</td>
+              </tr>
+              <tr>
+                <td>Prompt</td>
+                <td>提示词</td>
+                <td>一次请求的完整输入：消息列表 + 参数 + 工具定义</td>
+                <td>02</td>
+              </tr>
+              <tr>
+                <td>Message</td>
+                <td>消息</td>
+                <td>对话的最小单位，角色有 system / user / assistant / tool</td>
+                <td>02</td>
+              </tr>
+              <tr>
+                <td>Generation</td>
+                <td>一次生成</td>
+                <td>模型返回的一条候选结果，通常取第一条</td>
+                <td>02</td>
+              </tr>
+              <tr>
+                <td>ChatResponse</td>
+                <td>对话响应</td>
+                <td>包含多条 Generation 与 usage / finishReason 等元数据</td>
+                <td>02</td>
+              </tr>
+              <tr>
+                <td>Token</td>
+                <td>词元</td>
+                <td>计费与长度单位，约等于 0.75 个英文单词；中文按字切得更碎</td>
+                <td>13</td>
+              </tr>
+              <tr>
+                <td>Usage</td>
+                <td>用量</td>
+                <td>prompt / completion / total 三个 token 数</td>
+                <td>13</td>
+              </tr>
+              <tr>
+                <td>finishReason</td>
+                <td>停止原因</td>
+                <td>stop / length / tool_calls / content_filter，决定你为什么拿到这段结果</td>
+                <td>13</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="advisor">Advisor 与链路</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>术语</th>
+                <th>中文</th>
+                <th>一句话直觉</th>
+                <th>章</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Advisor ★</td>
+                <td>顾问 / 中间件</td>
+                <td>包在模型调用外面的横切逻辑，order 越小越靠外</td>
+                <td>06</td>
+              </tr>
+              <tr>
+                <td>AdvisorChain</td>
+                <td>顾问链</td>
+                <td>按 order 排好序的一串 Advisor，next 一次走一层</td>
+                <td>06</td>
+              </tr>
+              <tr>
+                <td>BaseAdvisor</td>
+                <td>基础顾问</td>
+                <td>把同步/流式骨架写好，你只填 before / after</td>
+                <td>06</td>
+              </tr>
+              <tr>
+                <td>CallAdvisor / StreamAdvisor</td>
+                <td>同步 / 流式顾问</td>
+                <td>更底层，可短路；想「不调模型直接返回」就得用它</td>
+                <td>06</td>
+              </tr>
+              <tr>
+                <td>ToolCallingAdvisor</td>
+                <td>工具调用顾问</td>
+                <td>2.0 起由框架自动注册，负责「调工具 → 再问模型」的循环</td>
+                <td>10</td>
+              </tr>
+              <tr>
+                <td>递归 Advisor</td>
+                <td>递归顾问</td>
+                <td>用 <code>chain.copy(this)</code> 重新走一遍后面的链，工具循环就是这么实现的</td>
+                <td>06</td>
+              </tr>
+              <tr>
+                <td>Observation</td>
+                <td>观测</td>
+                <td>一次操作的结构化记录，能拼成 trace、算出延迟与 token</td>
+                <td>13</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="memory">记忆</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>术语</th>
+                <th>中文</th>
+                <th>一句话直觉</th>
+                <th>章</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>ChatMemory ★</td>
+                <td>对话记忆</td>
+                <td>策略层：留多少条、system 怎么保留、超限先删谁</td>
+                <td>05</td>
+              </tr>
+              <tr>
+                <td>ChatMemoryRepository</td>
+                <td>记忆仓库</td>
+                <td>存储层：按会话整段读写消息，换库不改策略</td>
+                <td>05</td>
+              </tr>
+              <tr>
+                <td>MessageWindowChatMemory</td>
+                <td>窗口记忆</td>
+                <td>默认保留 20 条，裁剪点对齐到 user 消息</td>
+                <td>05</td>
+              </tr>
+              <tr>
+                <td>conversationId ★</td>
+                <td>会话 ID</td>
+                <td>记忆隔离的坐标；2.0 起每次调用必须显式传</td>
+                <td>05</td>
+              </tr>
+              <tr>
+                <td>窗口裁剪</td>
+                <td>Window trimming</td>
+                <td>超限时保留完整轮次，避免「有回答没提问」</td>
+                <td>05</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="rag">检索与向量</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>术语</th>
+                <th>中文</th>
+                <th>一句话直觉</th>
+                <th>章</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>RAG ★</td>
+                <td>检索增强生成</td>
+                <td>先查资料，再把资料塞进提示词，让模型基于资料回答</td>
+                <td>07</td>
+              </tr>
+              <tr>
+                <td>EmbeddingModel ★</td>
+                <td>向量模型</td>
+                <td>把文本变成 float 数组；和 ChatModel 是两个独立 Bean</td>
+                <td>07</td>
+              </tr>
+              <tr>
+                <td>Embedding</td>
+                <td>向量</td>
+                <td>文本在语义空间里的坐标，维度由模型决定</td>
+                <td>08</td>
+              </tr>
+              <tr>
+                <td>VectorStore ★</td>
+                <td>向量库</td>
+                <td>存向量 + 原文 + metadata，并支持相似度检索</td>
+                <td>07</td>
+              </tr>
+              <tr>
+                <td>Document</td>
+                <td>文档</td>
+                <td>ETL 的载体：id + text + metadata</td>
+                <td>07</td>
+              </tr>
+              <tr>
+                <td>ETL</td>
+                <td>抽取-转换-加载</td>
+                <td>Reader → Transformer（切分）→ Writer（入库）</td>
+                <td>07</td>
+              </tr>
+              <tr>
+                <td>chunk</td>
+                <td>分块</td>
+                <td>切分后的一段文本；太大有噪音，太碎丢语义</td>
+                <td>07</td>
+              </tr>
+              <tr>
+                <td>topK</td>
+                <td>取前 K 条</td>
+                <td>每次检索返回多少条，默认 4</td>
+                <td>07</td>
+              </tr>
+              <tr>
+                <td>similarityThreshold</td>
+                <td>相似度阈值</td>
+                <td>低于它的结果丢弃；默认 0.0 等于全收</td>
+                <td>07</td>
+              </tr>
+              <tr>
+                <td>HNSW / IVFFlat</td>
+                <td>近似最近邻索引</td>
+                <td>用一点召回率换检索速度；数据少时可以不用</td>
+                <td>08</td>
+              </tr>
+              <tr>
+                <td>rerank</td>
+                <td>重排</td>
+                <td>粗排之后用更贵的模型重新打分，提升相关性</td>
+                <td>09</td>
+              </tr>
+              <tr>
+                <td>metadata filter</td>
+                <td>元数据过滤</td>
+                <td>先按租户/版本/语言缩小范围，再谈相似度</td>
+                <td>09</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="tools">工具与协议</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>术语</th>
+                <th>中文</th>
+                <th>一句话直觉</th>
+                <th>章</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Tool Calling ★</td>
+                <td>工具调用</td>
+                <td>模型只提议「调哪个、参数是什么」，执行权在你</td>
+                <td>10</td>
+              </tr>
+              <tr>
+                <td>ToolCallback</td>
+                <td>工具回调</td>
+                <td>工具的统一抽象：定义 + 执行方法</td>
+                <td>10</td>
+              </tr>
+              <tr>
+                <td>ToolDefinition</td>
+                <td>工具定义</td>
+                <td>名字、描述、参数 JSON Schema；模型据此选择</td>
+                <td>10</td>
+              </tr>
+              <tr>
+                <td>ToolContext</td>
+                <td>工具上下文</td>
+                <td>传 userId / tenantId 这类模型不该看到的信息</td>
+                <td>10</td>
+              </tr>
+              <tr>
+                <td>returnDirect</td>
+                <td>直接返回</td>
+                <td>工具结果就是最终答案，跳过第二次模型调用</td>
+                <td>10</td>
+              </tr>
+              <tr>
+                <td>MCP ★</td>
+                <td>模型上下文协议</td>
+                <td>工具的「USB 接口」：发现、调用、资源、提示词</td>
+                <td>11</td>
+              </tr>
+              <tr>
+                <td>stdio / SSE / Streamable HTTP</td>
+                <td>三种传输</td>
+                <td>本地进程 / 老式推送 / 新版 HTTP 流式</td>
+                <td>11</td>
+              </tr>
+              <tr>
+                <td>McpToolFilter</td>
+                <td>MCP 工具过滤器</td>
+                <td>按服务器或工具名决定哪些工具进入命名空间</td>
+                <td>11</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="ops">工程与运维</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>术语</th>
+                <th>中文</th>
+                <th>一句话直觉</th>
+                <th>章</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>SpringAiRetryProperties</td>
+                <td>重试配置</td>
+                <td><code>spring.ai.retry.*</code>，默认 10 次、5 倍退避</td>
+                <td>14</td>
+              </tr>
+              <tr>
+                <td><code>TransientAiException</code></td>
+                <td>可重试异常</td>
+                <td>5xx / 网络问题；默认策略重试它和 <code>ResourceAccessException</code></td>
+                <td>14</td>
+              </tr>
+              <tr>
+                <td>NonTransientAiException</td>
+                <td>不可重试异常</td>
+                <td>4xx（含 401/403/429）；重试也没用</td>
+                <td>14</td>
+              </tr>
+              <tr>
+                <td>背压</td>
+                <td>Backpressure</td>
+                <td>下游消费不过来时让上游慢一点，流式里靠 Reactor 实现</td>
+                <td>04</td>
+              </tr>
+              <tr>
+                <td>boundedElastic</td>
+                <td>弹性线程池</td>
+                <td>Advisor 流式逻辑默认切到这里，避免阻塞事件循环</td>
+                <td>04</td>
+              </tr>
+              <tr>
+                <td>SSE</td>
+                <td>服务器推送事件</td>
+                <td>浏览器里逐字输出的底层协议</td>
+                <td>04</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pairs">最容易混的三对概念</h2>
+        <div class="compare">
+          <div class="col">
+            <h4>ChatModel vs ChatClient</h4>
+            <ul>
+              <li>ChatModel：能力接口，只认 Prompt</li>
+              <li>ChatClient：业务门面，带模板/记忆/RAG/工具</li>
+              <li>换模型换前者，业务逻辑留在后者</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4>ChatMemory vs ChatMemoryRepository</h4>
+            <ul>
+              <li>ChatMemory：策略（留多少、怎么裁）</li>
+              <li>Repository：存储（存哪、怎么读写）</li>
+              <li>换库不改策略，改窗口不动存储</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4>Tool vs Resource（MCP）</h4>
+            <ul>
+              <li>Tool：模型自主决定调用，有参数、有副作用</li>
+              <li>Resource：客户端主动读取的固定内容</li>
+              <li>能用 Resource 表达的就别做成 Tool</li>
+            </ul>
+          </div>
+        </div>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 流式与 SSE：Flux 的三个返回形态、chunk 的真实结构、WebFlux 与 MVC 两种接法、订阅与取消、流式下的记忆与观测、错误与超时。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="04 流式与 SSE：从 Flux 到浏览器 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="Flux 的三个返回形态、chunk 结构、WebFlux/MVC 接法、取消与超时、流式下的记忆与观测。" />
+    <title>04 流式与 SSE：从 Flux 到浏览器 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="04-streaming-sse" data-root="..">
+    <main>
+      <article class="article">
+        <h1>04 · 流式与 SSE</h1>
+        <p class="lede">
+          流式的难点不在 <code>.stream()</code> 这一行，而在它之后：<strong>每个元素到底是什么</strong>、
+          <strong>谁在什么线程上消费</strong>、<strong>用户关掉页面后请求会不会停</strong>、
+          <strong>出了错还能不能改 HTTP 状态码</strong>。这一章把这四件事讲透。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>说清 <code>stream().content()</code> 每个元素是什么，以及它和 <code>chatResponse()</code> 的区别</li>
+          <li>分别用 WebFlux 与 Spring MVC 写出真正逐字返回的接口</li>
+          <li>解释「不订阅就不发请求」「用户断开后请求会取消」的原因</li>
+          <li>在流式下正确处理记忆、观测、异常与超时，而不是等流结束才补救</li>
+        </ul>
+
+        <h2 id="why">先说为什么：同步是一次交付，流式是一串事件</h2>
+        <p>
+          <code>.call()</code> 的语义是「等全部生成完，一次性给我」。<code>.stream()</code> 的语义是
+          「模型每生成一小段就推给我一段」。后者带来三个新问题：连接要一直开着、消费速度可能跟不上生产速度、
+          中途失败时响应头已经发出去了。
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">ChatClient 层：Flux&lt;ChatClientResponse&gt;</span>
+            <div class="ld">每个元素是一小段增量响应，不是最终答案。</div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">ChatModel 层：Flux&lt;ChatResponse&gt;</span>
+            <div class="ld">
+              <code>ChatModelStreamAdvisor</code> 调 <code>chatModel.stream(prompt)</code>，并切到
+              <code>boundedElastic</code> 线程池。
+              <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ChatModelStreamAdvisor.java:53">ChatModelStreamAdvisor.java:53</span>
+            </div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">HTTP 层：SSE</span>
+            <div class="ld">
+              DeepSeek 用 <code>WebClient.bodyToFlux(String.class)</code> 接收 <code>data: {...}</code> 行，遇到
+              <code>[DONE]</code> 结束。
+              <span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/api/DeepSeekApi.java:182">DeepSeekApi.java:182</span>
+            </div>
+          </div>
+        </div>
+
+        <h2 id="minimal">最小可跑：命令行里逐字打印</h2>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/StreamDemo.java">Flux&lt;String&gt; flux = chatClient.prompt()
+        .user("用 100 字介绍杭州")
+        .stream()
+        .content();
+
+flux.doOnNext(System.out::print)   // 每来一小段就打印
+    .blockLast();                   // 命令行里阻塞到结束</pre>
+        <p>
+          <code>blockLast()</code> 只适合命令行演示。在 Web 应用里<strong>不要自己 block</strong>，也不建议自己
+          <code>subscribe</code>——把 <code>Flux</code> 交给框架，由它管理连接与背压。
+        </p>
+
+        <h2 id="chunks">每个 chunk 到底是什么</h2>
+        <p>
+          <code>StreamResponseSpec</code> 只有三个方法，返回的都是 <code>Flux</code>：
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>方法</th>
+                <th>元素类型</th>
+                <th>用途</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>content()</code></td>
+                <td><code>Flux&lt;String&gt;</code></td>
+                <td>只要文本增量；内部会过滤掉空串</td>
+              </tr>
+              <tr>
+                <td><code>chatResponse()</code></td>
+                <td><code>Flux&lt;ChatResponse&gt;</code></td>
+                <td>要元数据、finish reason、tool call 增量</td>
+              </tr>
+              <tr>
+                <td><code>chatClientResponse()</code></td>
+                <td><code>Flux&lt;ChatClientResponse&gt;</code></td>
+                <td>还要 Advisor 上下文</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre data-lang="java" data-file="content() 的实现">return chatResponse()
+        .map(r -&gt; Optional.ofNullable(r.getResult())
+                .map(Generation::getOutput)
+                .map(AbstractMessage::getText)
+                .orElse(""))
+        .filter(StringUtils::hasLength);</pre>
+        <p class="src-line">
+          三个方法的签名<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:376">ChatClient.java:376</span>；
+          <code>content()</code> 的过滤逻辑<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/DefaultChatClient.java:748">DefaultChatClient.java:748</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">每个元素不是「一个字」，而是一小段</span>
+          <p>
+            模型按 token 生成，但网络传输与框架可能把多个 token 合在一个 chunk 里。不要假设「一个元素 = 一个汉字」，
+            也不要用「收到几次」去估算 token 数——用最后的 usage。
+          </p>
+        </div>
+        <div class="callout tip">
+          <span class="ct">想要 token 用量，必须等流结束</span>
+          <p>
+            大多数厂商把 <code>usage</code> 放在最后一个 chunk 里，甚至流式模式下不返回。需要精确计费时，
+            在流结束后用聚合后的 <code>ChatResponse</code> 取 <code>getMetadata().getUsage()</code>，或者回到
+            <code>.call()</code>。
+          </p>
+        </div>
+
+        <h2 id="sse">接到浏览器：WebFlux 与 MVC 两种写法</h2>
+        <div class="compare">
+          <div class="col">
+            <h4>WebFlux：直接返回 Flux</h4>
+            <pre data-lang="java">@GetMapping(
+  value = "/chat/stream",
+  produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux&lt;String&gt; stream(@RequestParam String q) {
+    return chatClient.prompt()
+        .user(q)
+        .stream()
+        .content();
+}</pre>
+            <p>需要 <code>spring-boot-starter-webflux</code>。</p>
+          </div>
+          <div class="col">
+            <h4>MVC：用 SseEmitter 桥接</h4>
+            <pre data-lang="java">@GetMapping("/chat/stream")
+public SseEmitter stream(@RequestParam String q) {
+    SseEmitter emitter = new SseEmitter(0L); // 0 = 不超时
+    Disposable d = chatClient.prompt()
+        .user(q)
+        .stream()
+        .content()
+        .subscribe(
+            chunk -&gt; {
+                try { emitter.send(chunk); }
+                catch (IOException e) { emitter.completeWithError(e); }
+            },
+            emitter::completeWithError,
+            emitter::complete);
+    emitter.onCompletion(d::dispose);
+    emitter.onTimeout(d::dispose);
+    return emitter;
+}</pre>
+          </div>
+        </div>
+        <div class="callout warn">
+          <span class="ct"><code>SseEmitter</code> 不设超时会继承容器默认值</span>
+          <p>
+            Servlet 容器（如 Tomcat）的异步请求默认超时通常是 30 秒；<code>SseEmitter</code> 不显式设置时会继承它，
+            长回答容易被容器主动断掉。显式传 <code>0L</code>（不超时）或一个足够大的值，
+            并处理 <code>onTimeout</code> 释放上游订阅。Nginx 还要关掉 <code>proxy_buffering</code>，否则用户仍然
+            要等全部生成完才看到内容。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">同时引了 web 和 webflux，为什么还是不流？</span>
+          <p>
+            两个 starter 同时在 classpath 上时，Spring Boot 默认选 <strong>Servlet（MVC）</strong> 栈。MVC 虽然能适配
+            <code>Flux</code>，但要求 <code>produces</code> 是流式类型、且容器开启异步支持；这和「纯 WebFlux」的行为
+            不完全一致，排障时很容易误判。要么只引 webflux，要么设
+            <code>spring.main.web-application-type=reactive</code>。
+          </p>
+        </div>
+
+        <h2 id="lifecycle">订阅、取消与超时</h2>
+        <p>
+          <code>Flux</code> 是<strong>冷流</strong>：没有订阅者时，什么都不会发生。这一点在流式里尤其重要——
+          你在 Controller 里只是「描述」了一条流，真正发请求是在框架订阅它的时候。
+        </p>
+        <div class="steps">
+          <li>
+            <span class="sh">① 订阅发生</span>
+            <div>WebFlux 的响应式容器或 <code>SseEmitter</code> 的 <code>subscribe</code> 触发上游，WebClient 发 HTTP 请求。</div>
+          </li>
+          <li>
+            <span class="sh">② 逐个 chunk 到达</span>
+            <div>DeepSeek 的实现用 <code>takeUntil("[DONE]")</code> 决定何时结束，并过滤掉这个哨兵值。</div>
+          </li>
+          <li>
+            <span class="sh">③ 取消传播</span>
+            <div>
+              客户端断网 / 关页面 → 容器取消订阅 → <code>Flux</code> 取消 → WebClient 关闭连接。很多厂商会因此
+              停止生成（是否停止取决于厂商实现），这正是「取消能省钱」的原因。
+            </div>
+          </li>
+          <li>
+            <span class="sh">④ 超时</span>
+            <div>
+              <code>flux.timeout(Duration.ofSeconds(60))</code> 是<strong>总时长</strong>，不是首字节超时。
+              想要首字节超时，用 <code>timeout(Duration, Mono.fromRunnable(...))</code> 或把连接超时设在 HTTP 客户端上。
+            </div>
+          </li>
+        </div>
+        <pre data-lang="java" data-file="可观测的取消与超时">Flux&lt;String&gt; flux = chatClient.prompt()
+        .user(q)
+        .stream()
+        .content()
+        .timeout(Duration.ofSeconds(90))
+        .doOnCancel(() -&gt; log.info("客户端断开，生成已取消"))
+        .doOnComplete(() -&gt; log.info("生成完成"));</pre>
+        <p class="src-line">
+          结束条件与哨兵过滤<span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/api/DeepSeekApi.java:184">DeepSeekApi.java:184</span>；
+          终端 Advisor 的线程切换<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ChatModelStreamAdvisor.java:58">ChatModelStreamAdvisor.java:58</span>。
+        </p>
+
+        <h2 id="memory">流式下的记忆与观测：框架在背后做了聚合</h2>
+        <p>
+          流式会产出几十上百个 chunk，但记忆里<strong>不会</strong>出现几十条 assistant 消息。原因在
+          <code>MessageChatMemoryAdvisor</code> 的流式实现：它把整条流聚合完，再调用一次 <code>after()</code>。
+        </p>
+        <pre data-lang="java" data-file="记忆 Advisor 的流式路径">return Mono.just(chatClientRequest)
+        .publishOn(scheduler)
+        .map(request -&gt; this.before(request, streamAdvisorChain))
+        .flatMapMany(streamAdvisorChain::nextStream)
+        .transform(flux -&gt; new ChatClientMessageAggregator()
+                .aggregateChatClientResponse(flux, response -&gt; this.after(response, streamAdvisorChain)));</pre>
+        <p>
+          观测也是同理：<code>DefaultStreamResponseSpec</code> 一边把 chunk 发给你，一边用
+          <code>ChatClientMessageAggregator</code> 聚合出完整响应写入 observation。所以你在追踪系统里看到的是
+          <strong>一次完整调用</strong>，不是 N 次。
+        </p>
+        <p class="src-line">
+          记忆的聚合写回<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/MessageChatMemoryAdvisor.java:161">MessageChatMemoryAdvisor.java:161</span>；
+          观测聚合<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/DefaultChatClient.java:731">DefaultChatClient.java:731</span>。
+        </p>
+        <div class="callout">
+          <span class="ct">聚合的代价</span>
+          <p>
+            <code>ChatClientMessageAggregator</code> 需要在内存里保留整段文本直到流结束。超长回答（几万字）时，
+            这是一份额外的内存占用；同时它意味着记忆写入发生在流<strong>结束之后</strong>，中途取消则这一轮不会进记忆。
+          </p>
+        </div>
+
+        <h2 id="errors">错误处理：响应头发出去之后就晚了</h2>
+        <p>流式错误分两个阶段，处理方式完全不同：</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>阶段</th>
+                <th>还能改 HTTP 状态码吗</th>
+                <th>做法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>首个 chunk 之前</td>
+                <td>能</td>
+                <td>异常正常冒泡，全局异常处理器返回 4xx/5xx</td>
+              </tr>
+              <tr>
+                <td>首个 chunk 之后</td>
+                <td>不能，响应头已提交</td>
+                <td>发一个错误事件，或补一句兜底文本，然后正常结束</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre data-lang="java" data-file="流内兜底">Flux&lt;String&gt; flux = chatClient.prompt()
+        .user(q)
+        .stream()
+        .content()
+        .onErrorResume(ex -&gt; Flux.just("\n[生成中断：" + ex.getMessage() + "]"));</pre>
+        <div class="callout warn">
+          <span class="ct">不要在前端只判断 HTTP 200</span>
+          <p>
+            流式接口即使中途失败，HTTP 状态往往已经是 200。前端必须监听 SSE 的 <code>error</code>
+            事件或自定义的结束标记，否则会把「半截回答」当成成功。
+          </p>
+        </div>
+
+        <h2 id="performance">背压与首字延迟</h2>
+        <p>
+          Reactor 的背压会让上游按下游的请求量生产，但中间经过 <code>publishOn(boundedElastic)</code> 后，
+          会有一个预取队列（默认 256 个元素）。对文本流来说这通常无所谓，但如果你在 <code>doOnNext</code> 里做
+          落库、调外部接口这类<strong>阻塞</strong>操作，就会拖慢整个流，并把线程占在 <code>boundedElastic</code> 上。
+        </p>
+        <div class="compare">
+          <div class="col">
+            <h4>该做的</h4>
+            <ul>
+              <li>在 <code>doOnNext</code> 里只做轻量转换或推送</li>
+              <li>落库、审计放到流结束后统一处理</li>
+              <li>用 <code>timeout</code> 限制总时长，避免连接悬挂</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4>不该做的</h4>
+            <ul>
+              <li>在流里 <code>block()</code> 或 <code>sleep()</code></li>
+              <li>用 <code>flatMap</code> 并发处理 chunk，打乱顺序</li>
+              <li>把整段文本拼在内存里再一次性返回（那就失去流式的意义）</li>
+            </ul>
+          </div>
+        </div>
+        <p>
+          「首字延迟」主要由模型与网络决定，代码能做的只有：选更快的模型、别在调用前做重活、把
+          <code>maxTokens</code> 设合理、避免在 Advisor 链里加阻塞逻辑。
+        </p>
+
+        <h2 id="cheatsheet">速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>写法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>只要文本流</td>
+                <td><code>.stream().content()</code> → <code>Flux&lt;String&gt;</code></td>
+              </tr>
+              <tr>
+                <td>要元数据</td>
+                <td><code>.stream().chatResponse()</code></td>
+              </tr>
+              <tr>
+                <td>WebFlux 接口</td>
+                <td>返回 <code>Flux&lt;String&gt;</code> + <code>produces = TEXT_EVENT_STREAM_VALUE</code></td>
+              </tr>
+              <tr>
+                <td>MVC 接口</td>
+                <td><code>SseEmitter(0L)</code> + <code>subscribe</code> + <code>onCompletion/onTimeout</code></td>
+              </tr>
+              <tr>
+                <td>总超时</td>
+                <td><code>.timeout(Duration.ofSeconds(90))</code></td>
+              </tr>
+              <tr>
+                <td>取消时清理</td>
+                <td><code>.doOnCancel(...)</code></td>
+              </tr>
+              <tr>
+                <td>流内兜底</td>
+                <td><code>.onErrorResume(e -&gt; Flux.just("..."))</code></td>
+              </tr>
+              <tr>
+                <td>命令行演示</td>
+                <td><code>.blockLast()</code>（仅限非 Web 场景）</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">接了 Flux 但什么都不输出</span>
+          <p>
+            <strong>因为</strong>冷流没有被订阅。<strong>改成</strong>把 Flux 返回给 WebFlux 容器，或在 MVC 里
+            <code>subscribe</code> 到 <code>SseEmitter</code>。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">接口「流式」但用户要等全部生成完</span>
+          <p>
+            <strong>因为</strong>返回值没有真正走进流式通道：MVC 下 <code>produces</code> 或异步适配不对，或 Nginx 开了
+            <code>proxy_buffering</code>，或中间还有一层网关在缓冲。<strong>改成</strong>按栈选正确的写法，并逐层关缓冲。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">长回答总是 30 秒断掉</span>
+          <p>
+            <strong>因为</strong><code>SseEmitter</code> 没设超时，继承了容器默认的异步超时（Tomcat 常见 30 秒）。
+            <strong>改成</strong>构造时传 <code>0L</code> 或显式设置足够大的超时，并在超时回调里取消上游。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">记忆里出现了半截回答</span>
+          <p>
+            <strong>因为</strong>你在自定义 Advisor 里逐 chunk 写库，或者流被取消时触发了自己的回调。
+            框架的默认记忆 Advisor 是<strong>聚合后</strong>才写一次；自定义逻辑不要破坏这个语义。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li><code>stream().content()</code> 的元素个数等于 token 数吗？为什么？</li>
+          <li>用户关闭浏览器后，DeepSeek 那边会继续生成并计费吗？取决于什么？</li>
+          <li>为什么流式接口在中途失败时，前端不能只看 HTTP 状态码？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把同一段提示分别用 <code>.call()</code> 与 <code>.stream()</code> 调一次，记录首字延迟与总耗时。</li>
+          <li>在 WebFlux 接口里加 <code>.timeout(Duration.ofSeconds(2))</code>，用长回答触发超时，观察客户端收到什么。</li>
+          <li>在 <code>doOnCancel</code> 里打日志，生成中途关掉页面，确认取消真的传播到了服务端。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章「06 Advisor 机制」会把这一章出现的 <code>ChatModelStreamAdvisor</code>、
+          <code>MessageChatMemoryAdvisor</code> 放回同一条链上，讲清 order、递归与自定义 Advisor 的写法。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 环境搭建：Spring Boot 4.1 + JDK 17 + spring-ai-bom，只引一个 DeepSeek starter，跑通第一行；讲清 starter / autoconfigure / model / BOM 四层与常见启动错误。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="01 环境与依赖：Boot 4 + DeepSeek 跑通第一行 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="Boot 4.1 + JDK 17 + spring-ai-bom，只引一个 DeepSeek starter，跑通第一行。" />
+    <title>01 环境与依赖：Boot 4 + DeepSeek 跑通第一行 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="01-setup" data-root="..">
+    <main>
+      <article class="article">
+        <h1>01 · 环境与依赖</h1>
+        <p class="lede">
+          这一章只解决两件事：<strong>编译不过</strong>和<strong>能写出第一行真的能跑的代码</strong>。看完你会明白
+          <code>spring-ai-bom</code> / <code>spring-ai-starter-model-deepseek</code> /
+          <code>spring-ai-autoconfigure-model-deepseek</code> / <code>spring-ai-deepseek</code> 这四层各管什么，
+          以及 401、404、<code>No qualifying bean</code> 分别出在哪一层。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 Spring Boot 4.1 + JDK 17 建一个工程，<strong>只引一个</strong> AI 依赖就能启动并拿到模型回答</li>
+          <li>
+            说清 BOM、starter、autoconfigure、model 四层的分工，以及为什么 <code>spring-ai-starter-model-deepseek</code>
+            已经顺带给了你 <code>ChatClient.Builder</code> 和 <code>ChatMemory</code>
+          </li>
+          <li>
+            看到 <code>DeepSeek API key must be set</code>、401、404、<code>No qualifying bean of type ChatModel</code>
+            时，能直接判断该改配置、改地址还是改依赖
+          </li>
+        </ul>
+
+        <h2 id="why">先说为什么：Spring AI 不是一个 jar，是一层装配</h2>
+        <p>
+          第一次接触的人最容易把 Spring AI 当成「一个 SDK」。实际上它按职责拆成了四层，你在 <code>pom.xml</code>
+          里写的那一行只是<strong>入口</strong>，真正干活的类在下面三层。
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">spring-ai-bom（只管版本）</span>
+            <div class="ld">
+              一个只有 <code>dependencyManagement</code> 的 POM，声明这一版 Spring AI 全家桶用哪些版本。
+              它<strong>不引入任何代码</strong>，只让你在写依赖时省掉 <code>&lt;version&gt;</code>。
+              <span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/getting-started.adoc:146">getting-started.adoc:146</span>
+            </div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">spring-ai-starter-model-deepseek（入口 + 传递依赖）</span>
+            <div class="ld">
+              把下面三层和 HTTP 客户端一起打包给你：<code>spring-boot-starter-webclient</code>、
+              <code>spring-boot-starter-restclient</code>、DeepSeek 自动装配、DeepSeek 实现、ChatClient、ChatMemory。
+              <span class="src" data-src="starters/spring-ai-starter-model-deepseek/pom.xml:20">starter/pom.xml:20</span>
+              <span class="src" data-src="starters/spring-ai-starter-model-deepseek/pom.xml:30">starter/pom.xml:30</span>
+              <span class="src" data-src="starters/spring-ai-starter-model-deepseek/pom.xml:42">starter/pom.xml:42</span>
+              <span class="src" data-src="starters/spring-ai-starter-model-deepseek/pom.xml:54">starter/pom.xml:54</span>
+            </div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">spring-ai-autoconfigure-model-deepseek（把配置变成 Bean）</span>
+            <div class="ld">
+              读 <code>spring.ai.deepseek.*</code> 配置，创建 <code>DeepSeekChatModel</code>。它决定「什么条件下
+              才创建这个 Bean」——这是排查 <code>No qualifying bean</code> 的第一现场。
+              <span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-deepseek/src/main/java/org/springframework/ai/model/deepseek/autoconfigure/DeepSeekChatAutoConfiguration.java:51">DeepSeekChatAutoConfiguration.java:51</span>
+            </div>
+          </div>
+          <div class="layer">
+            <span class="lt">spring-ai-deepseek（真正的实现）</span>
+            <div class="ld">
+              <code>DeepSeekChatModel</code>、<code>DeepSeekChatOptions</code>、<code>DeepSeekApi</code>。
+              负责拼请求体、发 HTTP、把响应转成 <code>ChatResponse</code>。你不直接 <code>new</code> 它。
+            </div>
+          </div>
+        </div>
+        <div class="callout">
+          <span class="ct">为什么厂商要单独一个 starter，而不是全塞进一个 jar</span>
+          <p>
+            不用 DeepSeek 的项目，classpath 里就不该出现它的 SDK、HTTP 客户端和传递依赖。这也是为什么 1.x 时代的
+            <code>spring-ai-openai-spring-boot-starter</code> 在 2.0 已经统一改名为
+            <code>spring-ai-starter-model-openai</code> 这类 <code>starter-model-*</code> 形式——
+            你在网上抄到的旧坐标，在 2.0 里通常直接<strong>解析不到</strong>。
+          </p>
+        </div>
+
+        <h2 id="minimal">最小可跑：一个 Boot 工程 + 三行配置</h2>
+
+        <h3 id="step-pom">第 1 步：pom.xml</h3>
+        <p>新建一个 Maven 工程，<code>pom.xml</code> 只留这些内容：</p>
+        <pre data-lang="xml" data-file="pom.xml">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd"&gt;
+  &lt;modelVersion&gt;4.0.0&lt;/modelVersion&gt;
+
+  &lt;parent&gt;
+    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
+    &lt;version&gt;4.1.2&lt;/version&gt;
+    &lt;relativePath/&gt;
+  &lt;/parent&gt;
+
+  &lt;groupId&gt;com.example&lt;/groupId&gt;
+  &lt;artifactId&gt;spring-ai-demo&lt;/artifactId&gt;
+  &lt;version&gt;0.0.1-SNAPSHOT&lt;/version&gt;
+
+  &lt;properties&gt;
+    &lt;java.version&gt;17&lt;/java.version&gt;
+  &lt;/properties&gt;
+
+  &lt;dependencies&gt;
+    &lt;!-- Spring Boot 基础：日志、自动装配、SpringApplication --&gt;
+    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-boot-starter&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+
+    &lt;!-- 唯一的 AI 依赖：DeepSeek 模型 + ChatClient + ChatMemory 一起进来 --&gt;
+    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.ai&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-ai-starter-model-deepseek&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+  &lt;/dependencies&gt;
+
+  &lt;dependencyManagement&gt;
+    &lt;dependencies&gt;
+      &lt;!-- 只在这个工程里生效；Spring Boot parent 不会替你管 Spring AI 的版本 --&gt;
+      &lt;dependency&gt;
+        &lt;groupId&gt;org.springframework.ai&lt;/groupId&gt;
+        &lt;artifactId&gt;spring-ai-bom&lt;/artifactId&gt;
+        &lt;version&gt;2.0.2&lt;/version&gt;
+        &lt;type&gt;pom&lt;/type&gt;
+        &lt;scope&gt;import&lt;/scope&gt;
+      &lt;/dependency&gt;
+    &lt;/dependencies&gt;
+  &lt;/dependencyManagement&gt;
+&lt;/project&gt;</pre>
+        <p class="src-line">
+          本版本的 Java 基线是 17<span class="src" data-src="pom.xml:241">pom.xml:241</span>，构建时对齐的 Spring Boot
+          是 4.1.2<span class="src" data-src="pom.xml:254">pom.xml:254</span>；Spring AI 2.0.x 官方支持 Boot 4.0.x 与
+          4.1.x<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/getting-started.adoc:8">getting-started.adoc:8</span>。
+        </p>
+
+        <div class="callout warn">
+          <span class="ct">不要把你项目里的 Boot 3.x 直接升上来「试试」</span>
+          <p>
+            Spring AI 2.0 依赖 Spring Framework 7 / Boot 4 的新 API。把 2.0.2 的 BOM 塞进一个 Boot 3.5 的工程，
+            典型结果是编译期找不到方法、启动期 <code>NoSuchMethodError</code>。要么整体升到 Boot 4，要么留在
+            Spring AI 1.0.x。
+          </p>
+        </div>
+
+        <h3 id="step-yml">第 2 步：application.yml</h3>
+        <pre data-lang="yaml" data-file="src/main/resources/application.yml">spring:
+  ai:
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY}
+      chat:
+        model: deepseek-v4-flash
+        temperature: 0.7</pre>
+        <p class="src-line">
+          前缀来自 <span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-deepseek/src/main/java/org/springframework/ai/model/deepseek/autoconfigure/DeepSeekConnectionProperties.java:29">DeepSeekConnectionProperties.java:29</span>
+          与 <span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-deepseek/src/main/java/org/springframework/ai/model/deepseek/autoconfigure/DeepSeekChatProperties.java:40">DeepSeekChatProperties.java:40</span>；
+          默认地址是 <code>https://api.deepseek.com</code><span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-deepseek/src/main/java/org/springframework/ai/model/deepseek/autoconfigure/DeepSeekConnectionProperties.java:31">DeepSeekConnectionProperties.java:31</span>。
+        </p>
+
+        <h3 id="step-code">第 3 步：一个能打印回答的类</h3>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/DemoApplication.java">package com.example.demo;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class DemoApplication implements CommandLineRunner {
+
+    private final ChatClient chatClient;
+
+    // ChatClient.Builder 由自动装配提供，作用域是 prototype，注入即得到一个副本
+    DemoApplication(ChatClient.Builder builder) {
+        this.chatClient = builder.build();
+    }
+
+    public static void main(String[] args) {
+        SpringApplication.run(DemoApplication.class, args);
+    }
+
+    @Override
+    public void run(String... args) {
+        String answer = this.chatClient.prompt()
+                .user("用三句话解释什么是 RAG")
+                .call()
+                .content();
+        System.out.println(answer);
+    }
+}</pre>
+
+        <h3 id="step-run">第 4 步：给 key，然后运行</h3>
+        <pre data-lang="powershell" data-file="终端">$env:DEEPSEEK_API_KEY = "sk-你的key"
+./mvnw spring-boot:run</pre>
+        <p>第一次运行会下载依赖，之后通常 5–15 秒启动。输出大致是：</p>
+        <pre data-lang="text" data-file="控制台">========================================
+RAG（检索增强生成）是……
+========================================</pre>
+
+        <h2 id="line-by-line">逐行解读：容易懵的地方</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>这行</th>
+                <th>为什么这么写</th>
+                <th>写错会怎样</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>spring-ai-starter-model-deepseek</code> 不写版本</td>
+                <td>版本由 <code>spring-ai-bom</code> 统一管理</td>
+                <td>全部依赖都写死版本时，<code>spring-ai-deepseek</code> 与自动装配版本可能对不上，报 <code>NoSuchMethodError</code></td>
+              </tr>
+              <tr>
+                <td><code>spring.ai.deepseek.api-key</code></td>
+                <td>属性名来自 <code>setApiKey()</code> 的宽松绑定</td>
+                <td>写成 <code>spring.ai.deepseek.chat.api-key</code> 不生效——chat 前缀下没有这个属性</td>
+              </tr>
+              <tr>
+                <td><code>chat.model: deepseek-v4-flash</code></td>
+                <td>2.0.2 的默认模型就是它<span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/api/DeepSeekApi.java:61">DeepSeekApi.java:61</span></td>
+                <td>写 <code>deepseek-chat</code> / <code>deepseek-reasoner</code> 仍能请求，但这两个名字自 2.0.0 起已弃用<span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/api/DeepSeekApi.java:253">DeepSeekApi.java:253</span></td>
+              </tr>
+              <tr>
+                <td><code>ChatClient.Builder</code> 注入的是接口</td>
+                <td>自动装配创建的是 <code>DefaultChatClientBuilder</code>，作用域 prototype<span class="src" data-src="auto-configurations/models/chat/client/spring-ai-autoconfigure-model-chat-client/src/main/java/org/springframework/ai/model/chat/client/autoconfigure/ChatClientAutoConfiguration.java:113">ChatClientAutoConfiguration.java:113</span></td>
+                <td>自己 <code>new DefaultChatClient(...)</code> 会跳过 Advisor 装配，后面的记忆、工具全部失效</td>
+              </tr>
+              <tr>
+                <td><code>${DEEPSEEK_API_KEY}</code></td>
+                <td>用环境变量占位，避免把 key 提交进 Git</td>
+                <td>写成字面量并在 CI 日志里打印配置，key 会泄露</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="end-to-end">端到端：从 application.yml 到 ChatModel 实例</h2>
+        <p>启动时依次发生这些事，任何一步失败都会导致「没有 ChatModel」或「有 ChatModel 但请求 401」：</p>
+        <div class="steps">
+          <li>
+            <span class="sh">① 绑定配置</span>
+            <div>
+              <code>DeepSeekConnectionProperties</code> 拿到 <code>api-key</code> 与 <code>base-url</code>，
+              <code>DeepSeekChatProperties</code> 拿到 <code>model</code> / <code>temperature</code>，后者用
+              <code>toOptions()</code> 变成 <code>DeepSeekChatOptions</code>。
+              <span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-deepseek/src/main/java/org/springframework/ai/model/deepseek/autoconfigure/DeepSeekChatProperties.java:199">DeepSeekChatProperties.java:199</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">② 条件判断：要不要创建 DeepSeek Bean</span>
+            <div>
+              只有 <code>spring.ai.model.chat</code> 未设置（<code>matchIfMissing = true</code>）或等于
+              <code>deepseek</code> 时才装配。<span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-deepseek/src/main/java/org/springframework/ai/model/deepseek/autoconfigure/DeepSeekChatAutoConfiguration.java:54">DeepSeekChatAutoConfiguration.java:54</span>
+              常量值是 <code>"deepseek"</code><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/model/SpringAIModels.java:55">SpringAIModels.java:55</span>。
+            </div>
+          </li>
+          <li>
+            <span class="sh">③ 建 API 客户端</span>
+            <div>
+              解析 <code>base-url</code> 与 <code>api-key</code>，缺任何一个都会在启动时断言失败；然后创建一个
+              <code>RestClient</code>（同步）和一个 <code>WebClient</code>（流式）。
+              <span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-deepseek/src/main/java/org/springframework/ai/model/deepseek/autoconfigure/DeepSeekChatAutoConfiguration.java:88">DeepSeekChatAutoConfiguration.java:88</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">④ 建 ChatModel</span>
+            <div>
+              用 <code>DeepSeekChatModel.builder()</code> 把 API、options、ToolCallingManager、RetryTemplate、
+              ObservationRegistry 装进去。<span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-deepseek/src/main/java/org/springframework/ai/model/deepseek/autoconfigure/DeepSeekChatAutoConfiguration.java:71">DeepSeekChatAutoConfiguration.java:71</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">⑤ 建 ChatClient.Builder 与 ChatMemory</span>
+            <div>
+              <code>ChatClientAutoConfiguration</code> 用 <code>ChatModel</code> 建 <code>ChatClient.Builder</code>；
+              starter 顺带引入的 chat-memory 自动装配再给一个内存版 <code>ChatMemory</code>。
+              <span class="src" data-src="auto-configurations/models/chat/memory/spring-ai-autoconfigure-model-chat-memory/src/main/java/org/springframework/ai/model/chat/memory/autoconfigure/ChatMemoryAutoConfiguration.java:44">ChatMemoryAutoConfiguration.java:44</span>
+            </div>
+          </li>
+        </div>
+        <div class="callout tip">
+          <span class="ct">一句话记住这四层</span>
+          <p>
+            <strong>BOM 管版本，starter 管依赖，autoconfigure 管条件，model 管协议。</strong>
+            出问题时先问：是版本不对（BOM）、依赖没进来（starter）、条件不满足（autoconfigure），还是请求被厂商拒绝（model）。
+          </p>
+        </div>
+
+        <h2 id="versions">版本对齐：2.0.2 到底要什么</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>组件</th>
+                <th>本站使用</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Spring AI</td>
+                <td>2.0.2</td>
+                <td>所有 <code>org.springframework.ai</code> 依赖由 BOM 对齐</td>
+              </tr>
+              <tr>
+                <td>Spring Boot</td>
+                <td>4.1.2</td>
+                <td>官方支持 4.0.x 与 4.1.x；Spring AI 自身的构建基线是 4.1.2</td>
+              </tr>
+              <tr>
+                <td>JDK</td>
+                <td>17</td>
+                <td>Spring AI 的编译目标；Boot 4 的最低要求</td>
+              </tr>
+              <tr>
+                <td>模型</td>
+                <td>DeepSeek</td>
+                <td>默认 <code>deepseek-v4-flash</code>；更强的 <code>deepseek-v4-pro</code> 按需切换</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          想换 Ollama 本地跑：把依赖换成 <code>spring-ai-starter-model-ollama</code>，配置换成
+          <code>spring.ai.ollama.base-url</code> 与 <code>spring.ai.ollama.chat.model</code>，代码一行不用改——
+          因为 <code>ChatClient</code> 只认 <code>ChatModel</code> 接口。这也是本站从第 02 章开始只讲
+          <code>ChatClient</code>、不绑厂商的原因。
+        </p>
+
+        <h2 id="cheatsheet">依赖与配置速查</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>加什么</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>只要对话</td>
+                <td><code>spring-ai-starter-model-deepseek</code></td>
+              </tr>
+              <tr>
+                <td>暴露 HTTP 接口</td>
+                <td>再加 <code>spring-boot-starter-web</code>（或 <code>-webflux</code> 做纯流式）</td>
+              </tr>
+              <tr>
+                <td>换向量库做 RAG</td>
+                <td>再加 <code>spring-ai-starter-vector-store-*</code>（第 08 章）</td>
+              </tr>
+              <tr>
+                <td>跑测试</td>
+                <td><code>spring-boot-starter-test</code>；模型用自写的 <code>StubChatModel</code>（第 13 章）</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>配置项</th>
+                <th>默认值</th>
+                <th>作用</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>spring.ai.deepseek.api-key</code></td>
+                <td>无，必填</td>
+                <td>DeepSeek 凭证；缺失时启动断言失败</td>
+              </tr>
+              <tr>
+                <td><code>spring.ai.deepseek.base-url</code></td>
+                <td><code>https://api.deepseek.com</code></td>
+                <td>换代理或兼容网关时改这里</td>
+              </tr>
+              <tr>
+                <td><code>spring.ai.deepseek.chat.model</code></td>
+                <td><code>deepseek-v4-flash</code></td>
+                <td><code>deepseek-v4-flash</code> / <code>deepseek-v4-pro</code>；旧名已弃用</td>
+              </tr>
+              <tr>
+                <td><code>spring.ai.deepseek.chat.temperature</code></td>
+                <td>不设置，交给厂商</td>
+                <td>0–2；越低越稳定</td>
+              </tr>
+              <tr>
+                <td><code>spring.ai.model.chat</code></td>
+                <td>不设置（等于匹配所有）</td>
+                <td>classpath 上有多个厂商时，用它指定用哪个</td>
+              </tr>
+              <tr>
+                <td><code>spring.ai.chat.client.enabled</code></td>
+                <td><code>true</code></td>
+                <td>设为 false 就不会有 <code>ChatClient.Builder</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">你会看到 <code>IllegalArgumentException: DeepSeek API key must be set</code></span>
+          <p>
+            <strong>因为</strong>启动时没解析到 key，自动装配在创建 API 客户端前直接断言失败。
+            <strong>改成</strong>检查三处：<code>spring.ai.deepseek.api-key</code> 是否写对、环境变量是否在当前终端
+            生效（IDE 里要单独配）、<code>${DEEPSEEK_API_KEY}</code> 是否被引号或空格污染。
+            <span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-deepseek/src/main/java/org/springframework/ai/model/deepseek/autoconfigure/DeepSeekChatAutoConfiguration.java:94">DeepSeekChatAutoConfiguration.java:94</span>
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">你会看到配置没生效：抄了 <code>spring.ai.deepseek.chat.options.model</code></span>
+          <p>
+            <strong>因为</strong>2.0.0 起所有模型的 <code>.options</code> 层级被拍平了：原来的
+            <code>xxx.options.model</code> 现在是 <code>xxx.model</code>。旧写法还留着兼容，但
+            <code>getOptions()</code> 与嵌套 <code>Options</code> 类都已标记弃用，2.x 后续版本会删。
+            <strong>改成</strong>去掉 <code>.options</code> 这一段。
+            <span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:830">upgrade-notes.adoc:830</span>
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">你抄的 <code>deepseek-chat</code> 还能用，但已经不是推荐值</span>
+          <p>
+            <strong>因为</strong>2.0.2 把默认模型换成了 <code>deepseek-v4-flash</code>，并把
+            <code>deepseek-chat</code>（指向 V3）与 <code>deepseek-reasoner</code> 标记为
+            <code>@Deprecated(since = "2.0.0")</code>。<strong>建议</strong>新项目直接用
+            <code>deepseek-v4-flash</code>，需要更强推理时切 <code>deepseek-v4-pro</code>。
+            <span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/api/DeepSeekApi.java:238">DeepSeekApi.java:238</span>
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">你会看到 <code>401 Unauthorized</code>（启动成功，请求失败）</span>
+          <p>
+            <strong>因为</strong>key 格式对但无效、欠费，或 <code>base-url</code> 指向了一个需要不同鉴权的网关。
+            <strong>改成</strong>先用 <code>curl</code> 直接打一次 <code>https://api.deepseek.com/chat/completions</code>，
+            确认 key 本身可用，再回来怀疑代码。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">你会看到 <code>404 Not Found</code></span>
+          <p>
+            <strong>因为</strong><code>base-url</code> 多了或少了路径，或指向了不兼容的网关。客户端会在
+            <code>base-url</code> 后面拼 <code>/chat/completions</code>；如果 <code>base-url</code> 已经包含了完整端点，
+            就会重复拼接。用默认地址，或先确认网关要求的完整路径再改。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">你会看到 <code>No qualifying bean of type 'ChatModel'</code></span>
+          <p>
+            <strong>因为</strong>DeepSeek 的自动装配条件不满足：最常见是 <code>spring.ai.model.chat</code> 被设成了
+            别的值，或者 starter 根本没进来（Maven 里写了但 IDE 没刷新）。
+            <strong>改成</strong>先 <code>mvn dependency:tree | findstr spring-ai</code> 确认依赖存在，再检查那个
+            <code>spring.ai.model.chat</code>。
+          </p>
+        </div>
+        <div class="callout tip">
+          <span class="ct">两个厂商的 starter 同时在 classpath 上</span>
+          <p>
+            两个 <code>ChatModel</code> Bean 会让 <code>ChatClient.Builder</code> 不知道该用哪个，启动时报
+            「expected single matching bean but found 2」。用 <code>spring.ai.model.chat=deepseek</code>
+            显式选一个，另一家的自动装配就不会生效。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>为什么 <code>spring-ai-starter-model-deepseek</code> 不写 <code>&lt;version&gt;</code> 也能解析？</li>
+          <li>把 <code>spring.ai.deepseek.chat.model</code> 写成 <code>spring.ai.deepseek.chat.options.model</code>，会发生什么？</li>
+          <li>启动成功但每次请求都 401，问题在四层中的哪一层？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把 <code>temperature</code> 从 0.7 改成 0，同一个问题连问三次，观察回答是否稳定。</li>
+          <li>删掉 <code>api-key</code> 那一行，重启，把完整报错贴到笔记里——下次遇到就知道长什么样。</li>
+          <li>在 <code>pom.xml</code> 里执行 <code>mvn dependency:tree</code>，找到 <code>spring-ai-deepseek</code> 是从哪条路径进来的。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          环境通了，进 <a href="02-chatclient.html">02 ChatClient</a>：把刚才那三行调用拆开，看清 prompt、call、
+          entity、stream 各自的边界。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Spring AI 2.0.2 源码地图：spring-ai-model、client-chat、rag、vector-store、models、auto-configurations、starters、mcp 各模块的职责与入口文件。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="E 源码地图：spring-ai 的模块怎么分 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="各模块职责、入口文件与「按主题找代码」索引。" />
+    <title>E 源码地图：spring-ai 的模块怎么分 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="source-map" data-root="..">
+    <main>
+      <article class="article">
+        <h1>附录 E · 源码地图</h1>
+        <p class="lede">
+          官方文档讲「怎么用」，源码讲「到底怎么实现的」。这一页给仓库的模块划分与入口文件，
+          让你遇到「文档没说清」时知道该打开哪个文件。
+        </p>
+
+        <h2 id="how">怎么读源码</h2>
+        <ol>
+          <li>先看接口，再看实现：<code>ChatModel</code> → <code>DeepSeekChatModel</code>。</li>
+          <li>配置类优先：<code>*Properties</code> 决定你能配什么，默认值都在字段上。</li>
+          <li>自动装配决定「什么时候生效」：<code>@ConditionalOn*</code> 比实现更能解释「为什么没有 Bean」。</li>
+          <li>测试是最好的用法示例：<code>src/test</code> 里通常有最小可运行配置。</li>
+        </ol>
+
+        <h2 id="layout">顶层目录</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>目录</th>
+                <th>职责</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>spring-ai-commons/</code></td>
+                <td>Document、文本切分、通用工具</td>
+              </tr>
+              <tr>
+                <td><code>spring-ai-model/</code></td>
+                <td>ChatModel、ChatOptions、消息、记忆、工具、Embedding 接口</td>
+              </tr>
+              <tr>
+                <td><code>spring-ai-client-chat/</code></td>
+                <td>ChatClient、Advisor 链、内置 Advisor</td>
+              </tr>
+              <tr>
+                <td><code>spring-ai-rag/</code></td>
+                <td>RetrievalAugmentationAdvisor、查询改写/扩展、检索器</td>
+              </tr>
+              <tr>
+                <td><code>spring-ai-vector-store/</code></td>
+                <td>VectorStore 接口、SearchRequest、SimpleVectorStore</td>
+              </tr>
+              <tr>
+                <td><code>models/</code></td>
+                <td>各厂商实现：deepseek / openai / anthropic / ollama …</td>
+              </tr>
+              <tr>
+                <td><code>vector-stores/</code></td>
+                <td>各向量库实现：pgvector / redis / milvus …</td>
+              </tr>
+              <tr>
+                <td><code>advisors/</code></td>
+                <td>独立 Advisor：vector-store（RAG）、tool-search</td>
+              </tr>
+              <tr>
+                <td><code>auto-configurations/</code></td>
+                <td>Spring Boot 自动装配，按模型/向量库/MCP 分组</td>
+              </tr>
+              <tr>
+                <td><code>starters/</code></td>
+                <td>用户真正引用的 Maven 坐标，把依赖打包</td>
+              </tr>
+              <tr>
+                <td><code>memory-repositories/</code></td>
+                <td>JDBC / Redis / Mongo 等记忆存储实现</td>
+              </tr>
+              <tr>
+                <td><code>mcp/</code></td>
+                <td>MCP 注解、传输、公共类型</td>
+              </tr>
+              <tr>
+                <td><code>spring-ai-docs/</code></td>
+                <td>官方文档源（Antora adoc），upgrade-notes 也在这里</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="core">核心层：接口在哪</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要找</th>
+                <th>文件</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>对话模型接口</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/model/ChatModel.java:30">ChatModel.java:30</span></td>
+              </tr>
+              <tr>
+                <td>对话客户端</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:61">ChatClient.java:61</span></td>
+              </tr>
+              <tr>
+                <td>默认实现（链路最全）</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/DefaultChatClient.java:676">DefaultChatClient.java:676</span></td>
+              </tr>
+              <tr>
+                <td>Advisor 接口与默认 order</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/api/Advisor.java:39">Advisor.java:39</span></td>
+              </tr>
+              <tr>
+                <td>链的构建与排序</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/DefaultAroundAdvisorChain.java:277">DefaultAroundAdvisorChain.java:277</span></td>
+              </tr>
+              <tr>
+                <td>记忆策略</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/MessageWindowChatMemory.java:81">MessageWindowChatMemory.java:81</span></td>
+              </tr>
+              <tr>
+                <td>工具定义生成</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/support/ToolDefinitions.java:52">ToolDefinitions.java:52</span></td>
+              </tr>
+              <tr>
+                <td>工具执行与上限</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/model/tool/DefaultToolCallingManager.java:178">DefaultToolCallingManager.java:178</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="models">厂商实现：换模型看这里</h2>
+        <p>
+          每个厂商一个模块，结构几乎一样：<code>XxxChatModel</code>（协议转换）、<code>XxxChatOptions</code>（参数）、
+          <code>XxxApi</code>（HTTP 客户端）。以 DeepSeek 为例：
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>文件</th>
+                <th>看什么</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/DeepSeekChatModel.java:200">DeepSeekChatModel.java:200</span></td>
+                <td>如何把 Prompt 转成请求、处理工具循环</td>
+              </tr>
+              <tr>
+                <td><span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/DeepSeekChatOptions.java:44">DeepSeekChatOptions.java:44</span></td>
+                <td>实现了哪个 Options 接口（决定支持哪些能力）</td>
+              </tr>
+              <tr>
+                <td><span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/api/DeepSeekApi.java:156">DeepSeekApi.java:156</span></td>
+                <td>同步/流式 HTTP、SSE 解析、chunk 合并</td>
+              </tr>
+              <tr>
+                <td><span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/api/DeepSeekApi.java:61">DeepSeekApi.java:61</span></td>
+                <td>默认模型、模型枚举与弃用标记</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout tip">
+          <span class="ct">判断「这个能力厂商支不支持」的最快方法</span>
+          <p>
+            看它的 <code>Options</code> 实现了哪些接口：<code>ToolCallingChatOptions</code> 决定能不能调工具，
+            <code>StructuredOutputChatOptions</code> 决定能不能用原生结构化输出。
+          </p>
+        </div>
+
+        <h2 id="autoconfig">自动装配：为什么 Bean 没生效</h2>
+        <p>
+          <code>auto-configurations/</code> 下的类通过 <code>@ConditionalOnProperty</code> /
+          <code>@ConditionalOnClass</code> / <code>@ConditionalOnMissingBean</code> 决定是否创建 Bean。
+          排查「没有 ChatModel」时，直接看对应 <code>*AutoConfiguration</code> 的条件。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>场景</th>
+                <th>文件</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>DeepSeek 什么时候装配</td>
+                <td><span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-deepseek/src/main/java/org/springframework/ai/model/deepseek/autoconfigure/DeepSeekChatAutoConfiguration.java:51">DeepSeekChatAutoConfiguration.java:51</span></td>
+              </tr>
+              <tr>
+                <td>ChatClient.Builder 从哪来</td>
+                <td><span class="src" data-src="auto-configurations/models/chat/client/spring-ai-autoconfigure-model-chat-client/src/main/java/org/springframework/ai/model/chat/client/autoconfigure/ChatClientAutoConfiguration.java:112">ChatClientAutoConfiguration.java:112</span></td>
+              </tr>
+              <tr>
+                <td>记忆 Bean 从哪来</td>
+                <td><span class="src" data-src="auto-configurations/models/chat/memory/spring-ai-autoconfigure-model-chat-memory/src/main/java/org/springframework/ai/model/chat/memory/autoconfigure/ChatMemoryAutoConfiguration.java:44">ChatMemoryAutoConfiguration.java:44</span></td>
+              </tr>
+              <tr>
+                <td>pgvector 属性与建表</td>
+                <td><span class="src" data-src="auto-configurations/vector-stores/spring-ai-autoconfigure-vector-store-pgvector/src/main/java/org/springframework/ai/vectorstore/pgvector/autoconfigure/PgVectorStoreProperties.java:35">PgVectorStoreProperties.java:35</span></td>
+              </tr>
+              <tr>
+                <td>工具上限与异常策略</td>
+                <td><span class="src" data-src="auto-configurations/models/tool/spring-ai-autoconfigure-model-tool/src/main/java/org/springframework/ai/model/tool/autoconfigure/ToolCallingProperties.java:40">ToolCallingProperties.java:40</span></td>
+              </tr>
+              <tr>
+                <td>MCP 工具如何变成 ToolCallback</td>
+                <td><span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-client-common/src/main/java/org/springframework/ai/mcp/client/common/autoconfigure/McpToolCallbackAutoConfiguration.java:71">McpToolCallbackAutoConfiguration.java:71</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="rag">RAG 与向量库</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要找</th>
+                <th>文件</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>检索增强总流程</td>
+                <td><span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/advisor/RetrievalAugmentationAdvisor.java:107">RetrievalAugmentationAdvisor.java:107</span></td>
+              </tr>
+              <tr>
+                <td>通俗版 RAG（QuestionAnswer）</td>
+                <td><span class="src" data-src="advisors/spring-ai-vector-store-advisor/src/main/java/org/springframework/ai/chat/client/advisor/vectorstore/QuestionAnswerAdvisor.java:109">QuestionAnswerAdvisor.java:109</span></td>
+              </tr>
+              <tr>
+                <td>检索参数与默认值</td>
+                <td><span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/SearchRequest.java:44">SearchRequest.java:44</span></td>
+              </tr>
+              <tr>
+                <td>内存向量库实现</td>
+                <td><span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/SimpleVectorStore.java:115">SimpleVectorStore.java:115</span></td>
+              </tr>
+              <tr>
+                <td>切分算法</td>
+                <td><span class="src" data-src="spring-ai-commons/src/main/java/org/springframework/ai/transformer/splitter/TokenTextSplitter.java:138">TokenTextSplitter.java:138</span></td>
+              </tr>
+              <tr>
+                <td>pgvector 建表与索引</td>
+                <td><span class="src" data-src="vector-stores/spring-ai-pgvector-store/src/main/java/org/springframework/ai/vectorstore/pgvector/PgVectorStore.java:429">PgVectorStore.java:429</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="mcp">MCP</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要找</th>
+                <th>文件</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>客户端公共属性</td>
+                <td><span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-client-common/src/main/java/org/springframework/ai/mcp/client/common/autoconfigure/properties/McpClientCommonProperties.java:34">McpClientCommonProperties.java:34</span></td>
+              </tr>
+              <tr>
+                <td>stdio 连接参数</td>
+                <td><span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-client-common/src/main/java/org/springframework/ai/mcp/client/common/autoconfigure/properties/McpStdioClientProperties.java:118">McpStdioClientProperties.java:118</span></td>
+              </tr>
+              <tr>
+                <td>服务端属性与协议</td>
+                <td><span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-server-common/src/main/java/org/springframework/ai/mcp/server/common/autoconfigure/properties/McpServerProperties.java:50">McpServerProperties.java:50</span></td>
+              </tr>
+              <tr>
+                <td>@McpTool 注解</td>
+                <td><span class="src" data-src="mcp/mcp-annotations/src/main/java/org/springframework/ai/mcp/annotation/McpTool.java:42">McpTool.java:42</span></td>
+              </tr>
+              <tr>
+                <td>工具过滤器</td>
+                <td><span class="src" data-src="mcp/common/src/main/java/org/springframework/ai/mcp/McpToolFilter.java:30">McpToolFilter.java:30</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="docs">文档源：比官网更早一步</h2>
+        <p>
+          <code>spring-ai-docs/src/main/antora/modules/ROOT/pages/</code> 就是官方站点的源文件。两个最值得读的：
+        </p>
+        <ul>
+          <li><code>api/chatclient.adoc</code>：ChatClient 的官方语义与示例。</li>
+          <li>
+            <code>upgrade-notes.adoc</code>：所有破坏性变更的权威清单，按版本倒序排列（2.0.2 在最上面）。
+            遇到「升级后行为变了」，先来这里搜关键词。
+          </li>
+        </ul>
+        <div class="callout">
+          <span class="ct">文档与源码冲突时信谁</span>
+          <p>
+            信源码，但要确认你读的是 <strong>v2.0.2 tag</strong> 的源码。本站的每一条结论都对应到具体文件行，
+            你可以在 GitHub 上按 tag 复核。
+          </p>
+        </div>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

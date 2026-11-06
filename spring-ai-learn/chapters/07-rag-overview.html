@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 RAG 总览：ETL 三段流水线、Document 与切分、EmbeddingModel 与 DeepSeek 的分工、SimpleVectorStore、QuestionAnswerAdvisor 的默认行为与 SearchRequest 参数。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="07 RAG 总览：ETL 流水线与 QuestionAnswerAdvisor · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="ETL 三段流水线、Document 与切分、EmbeddingModel、SimpleVectorStore、QuestionAnswerAdvisor。" />
+    <title>07 RAG 总览：ETL 流水线与 QuestionAnswerAdvisor · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="07-rag-overview" data-root="..">
+    <main>
+      <article class="article">
+        <h1>07 · RAG 总览</h1>
+        <p class="lede">
+          RAG 不是「把文档丢给模型」，而是一条<strong>离线写入 + 在线检索</strong>的流水线：先把文档切块、向量化、存进
+          向量库；提问时再检索最相关的几块，拼进提示词。这一章把流水线的每一段和默认参数讲清楚，最后跑通一个
+          完全不依赖外部服务的本地 RAG。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>画出 ETL 三段（Reader → Transformer → Writer）的输入输出，并说清 <code>Document</code> 在中间扮演什么角色</li>
+          <li>解释为什么用 DeepSeek 做对话时，还必须另外引入一个 <code>EmbeddingModel</code></li>
+          <li>用 <code>SimpleVectorStore</code> + <code>QuestionAnswerAdvisor</code> 跑通「文档 → 问答」全流程</li>
+          <li>调对 <code>topK</code> 与 <code>similarityThreshold</code>，并知道默认值意味着什么</li>
+        </ul>
+
+        <h2 id="why">先说为什么：模型不知道你的私有数据</h2>
+        <p>
+          模型的知识停留在训练截止时间，也不知道你公司的退货政策、产品手册和工单记录。两条路：微调，或者把相关资料
+          在提问时一起发给它。后者就是 RAG——便宜、可更新、可溯源，缺点是受上下文长度与检索质量限制。
+        </p>
+        <div class="callout">
+          <span class="ct">RAG 里有两个模型，不是一个</span>
+          <p>
+            <strong>ChatModel</strong> 负责读上下文并回答；<strong>EmbeddingModel</strong> 负责把文本变成向量。
+            两者是独立接口、独立 Bean、独立厂商。DeepSeek 的 starter 只提供 ChatModel，所以本站的 RAG 示例必须
+            额外引入一个 EmbeddingModel（下一节讲三种选法）。
+          </p>
+        </div>
+
+        <h2 id="pipeline">ETL 流水线：三段，缺一不可</h2>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">① Reader：把各种来源变成 Document</span>
+            <div class="ld">
+              文本、PDF、Markdown、网页、数据库行，最终都变成带 <code>text</code> 与 <code>metadata</code> 的
+              <code>Document</code>。<span class="src" data-src="spring-ai-commons/src/main/java/org/springframework/ai/document/Document.java:120">Document.java:120</span>
+            </div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">② Transformer：切块、清洗、补元数据</span>
+            <div class="ld">
+              最常用的是 <code>TokenTextSplitter</code>：按 token 切，默认块大小 800 token。
+              <span class="src" data-src="spring-ai-commons/src/main/java/org/springframework/ai/transformer/splitter/TokenTextSplitter.java:40">TokenTextSplitter.java:40</span>
+            </div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">③ Writer：向量化并写入向量库</span>
+            <div class="ld">
+              <code>VectorStore</code> 同时是 <code>DocumentWriter</code> 与 <code>VectorStoreRetriever</code>：
+              写入时算 embedding，检索时算 query embedding 再比相似度。
+              <span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/VectorStore.java:40">VectorStore.java:40</span>
+            </div>
+          </div>
+        </div>
+        <p>
+          三段的接口都很小：<code>DocumentReader</code> 提供 <code>get()</code>，
+          <code>DocumentTransformer</code> 是一个 <code>Function&lt;List&lt;Document&gt;, List&lt;Document&gt;&gt;</code>，
+          <code>VectorStore</code> 提供 <code>add</code> / <code>delete</code> / <code>similaritySearch</code>。
+          这意味着你可以随意替换其中一段，而不影响另外两段。
+        </p>
+        <div class="callout tip">
+          <span class="ct">切分粒度决定召回质量</span>
+          <p>
+            块太大，检索命中后塞进提示词的内容里噪音多、还浪费 token；块太小，一句话被切断，语义不完整。
+            <code>TokenTextSplitter</code> 默认 800 token / 最小 350 字符，并且优先在 <code>. ? ! 换行</code>
+            处断开——这就是为什么它比「按字数硬切」更不容易切坏句子。
+          </p>
+        </div>
+        <p class="src-line">
+          切分参数默认值<span class="src" data-src="spring-ai-commons/src/main/java/org/springframework/ai/transformer/splitter/TokenTextSplitter.java:42">TokenTextSplitter.java:42</span>；
+          <code>apply</code> 与 <code>split</code> 的关系<span class="src" data-src="spring-ai-commons/src/main/java/org/springframework/ai/transformer/splitter/TextSplitter.java:44">TextSplitter.java:44</span>。
+        </p>
+
+        <h2 id="embedding">EmbeddingModel：DeepSeek 之外还得再引一个</h2>
+        <p>三种常见选法，按「要不要外部服务」排序：</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>方案</th>
+                <th>依赖</th>
+                <th>优点</th>
+                <th>代价</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>本地 ONNX（本章示例）</td>
+                <td><code>spring-ai-starter-model-transformers</code></td>
+                <td>零 Key、零外部服务、数据不出机器</td>
+                <td>首次启动要下载模型；CPU 推理，吞吐有限</td>
+              </tr>
+              <tr>
+                <td>Ollama</td>
+                <td><code>spring-ai-starter-model-ollama</code></td>
+                <td>本地、可换模型、有 GPU 加速</td>
+                <td>要装 Ollama 并 pull embedding 模型</td>
+              </tr>
+              <tr>
+                <td>OpenAI 兼容网关</td>
+                <td><code>spring-ai-starter-model-openai</code></td>
+                <td>质量稳定、无需本地资源</td>
+                <td>要 key；数据出境；按 token 计费</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          本章用本地 ONNX：配置前缀是 <code>spring.ai.embedding.transformer</code>，默认模型是
+          <code>sentence-transformers/all-MiniLM-L6-v2</code>，输出 384 维向量。第一次启动会从远程下载模型并缓存，
+          之后离线可用。
+        </p>
+        <pre data-lang="yaml" data-file="application.yml">spring:
+  ai:
+    embedding:
+      transformer:
+        cache:
+          directory: ./.cache/spring-ai   # 模型缓存目录，默认是临时目录，重启会重新下载
+        onnx:
+          model-output-name: last_hidden_state</pre>
+        <p class="src-line">
+          配置前缀<span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-transformers/src/main/java/org/springframework/ai/model/transformers/autoconfigure/TransformersEmbeddingModelProperties.java:41">TransformersEmbeddingModelProperties.java:41</span>，
+          默认缓存目录是临时目录<span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-transformers/src/main/java/org/springframework/ai/model/transformers/autoconfigure/TransformersEmbeddingModelProperties.java:43">TransformersEmbeddingModelProperties.java:43</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">不要把缓存目录留在默认的临时目录</span>
+          <p>
+            默认目录是启动时创建的临时目录，进程重启后可能被清理，导致每次启动都重新下载模型。显式指定一个项目内或
+            用户目录下的路径，开发和 CI 都稳定得多。
+          </p>
+        </div>
+
+        <h2 id="minimal">最小可跑：本地文档 → 向量库 → 问答接口</h2>
+        <p>在 01 章工程上追加三个依赖（版本仍由 BOM 管）：</p>
+        <pre data-lang="xml" data-file="pom.xml">    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.ai&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-ai-starter-model-transformers&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.ai&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-ai-vector-store-advisor&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt;
+    &lt;/dependency&gt;</pre>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/RagConfig.java">package com.example.demo;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
+import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.SimpleVectorStore;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+class RagConfig {
+
+    // 内存向量库：进程重启即清空，适合演示；生产换 pgvector / Redis / Milvus
+    @Bean
+    VectorStore vectorStore(EmbeddingModel embeddingModel) {
+        return SimpleVectorStore.builder(embeddingModel).build();
+    }
+
+    @Bean
+    ChatClient chatClient(ChatClient.Builder builder, VectorStore vectorStore) {
+        return builder
+                .defaultAdvisors(QuestionAnswerAdvisor.builder(vectorStore)
+                        .searchRequest(SearchRequest.builder()
+                                .topK(4)
+                                .similarityThreshold(0.5)
+                                .build())
+                        .build())
+                .build();
+    }
+}</pre>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/IngestRunner.java">package com.example.demo;
+
+import java.util.List;
+
+import org.springframework.ai.document.Document;
+import org.springframework.ai.transformer.splitter.TokenTextSplitter;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.stereotype.Component;
+
+@Component
+class IngestRunner implements ApplicationRunner {
+
+    private final VectorStore vectorStore;
+
+    IngestRunner(VectorStore vectorStore) {
+        this.vectorStore = vectorStore;
+    }
+
+    @Override
+    public void run(ApplicationArguments args) {
+        List&lt;Document&gt; docs = List.of(
+                new Document("退货政策：签收后 7 天内可无理由退货，商品需保持完好。"),
+                new Document("运费规则：单笔满 99 元包邮，偏远地区除外。"),
+                new Document("发票：支持电子发票，下单时填写抬头，发货后 24 小时内开具。"));
+
+        var splitter = TokenTextSplitter.builder().build();
+        this.vectorStore.add(splitter.apply(docs));
+    }
+}</pre>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/AskController.java">@RestController
+class AskController {
+
+    private final ChatClient chatClient;
+
+    AskController(ChatClient chatClient) {
+        this.chatClient = chatClient;
+    }
+
+    @GetMapping("/ask")
+    String ask(@RequestParam String q) {
+        return this.chatClient.prompt().user(q).call().content();
+    }
+}</pre>
+        <p>
+          访问 <code>/ask?q=满多少包邮</code>，Advisor 会先检索出「运费规则」那一块，拼进提示词，再让模型基于它回答。
+        </p>
+
+        <h2 id="advisor">QuestionAnswerAdvisor：一个 Advisor 就是整条在线链路</h2>
+        <p>它的 <code>before()</code> 只做四件事：</p>
+        <ol>
+          <li>从上下文取用户问题（如果没有，就用提示词的最后一条 user 消息）；</li>
+          <li>用当前 <code>SearchRequest</code> 调 <code>vectorStore.similaritySearch(...)</code>；</li>
+          <li>把检索到的文档拼成 <code>{question_answer_context}</code>；</li>
+          <li>套进默认模板，<strong>追加到用户消息</strong>，再交给后面的链路。</li>
+        </ol>
+        <p>默认模板长这样（原文）：</p>
+        <pre data-lang="text" data-file="QuestionAnswerAdvisor 的默认模板">{query}
+
+Context information is below, surrounded by ---------------------
+
+---------------------
+{question_answer_context}
+---------------------
+
+Given the context and provided history information and not prior knowledge,
+reply to the user comment. If the answer is not in the context, inform
+the user that you can't answer the question.</pre>
+        <p>
+          注意最后一句：它明确要求「上下文里没有就说不知道」。这比你自己写「不要编造」有效得多——因为它是系统级的
+          指令，且紧贴上下文。想换成中文或调整语气，用 <code>.promptTemplate(...)</code> 覆盖。
+        </p>
+        <p class="src-line">
+          默认模板<span class="src" data-src="advisors/spring-ai-vector-store-advisor/src/main/java/org/springframework/ai/chat/client/advisor/vectorstore/QuestionAnswerAdvisor.java:61">QuestionAnswerAdvisor.java:61</span>；
+          <code>before</code> 的检索与拼装<span class="src" data-src="advisors/spring-ai-vector-store-advisor/src/main/java/org/springframework/ai/chat/client/advisor/vectorstore/QuestionAnswerAdvisor.java:109">QuestionAnswerAdvisor.java:109</span>；
+          默认 order 是 0<span class="src" data-src="advisors/spring-ai-vector-store-advisor/src/main/java/org/springframework/ai/chat/client/advisor/vectorstore/QuestionAnswerAdvisor.java:75">QuestionAnswerAdvisor.java:75</span>。
+        </p>
+
+        <h2 id="search">SearchRequest：两个参数决定召回</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>参数</th>
+                <th>默认值</th>
+                <th>调大 / 调小会怎样</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>topK</code></td>
+                <td>4</td>
+                <td>调大：召回更全，但提示词更长、噪音更多、更贵</td>
+              </tr>
+              <tr>
+                <td><code>similarityThreshold</code></td>
+                <td>0.0（全收）</td>
+                <td>调大：只留高相似度，减少幻觉，但可能「什么都没检索到」</td>
+              </tr>
+              <tr>
+                <td><code>filterExpression</code></td>
+                <td>无</td>
+                <td>按 metadata 过滤，例如只查某个产品线、某个语言</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          默认值见 <span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/SearchRequest.java:49">SearchRequest.java:49</span>、
+          <span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/SearchRequest.java:44">SearchRequest.java:44</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">默认阈值 0.0 意味着「什么都收」</span>
+          <p>
+            哪怕问题和文档毫不相关，前 4 条也会被塞进提示词。模型看到一堆无关内容，反而更容易编。生产环境通常把阈值
+            设在 0.5–0.75（取决于 embedding 模型与数据集），并把 <code>topK</code> 控制在 3–6。
+          </p>
+        </div>
+        <p>
+          运行时还可以按请求覆盖过滤条件：在 advisor 上下文里放
+          <code>QuestionAnswerAdvisor.FILTER_EXPRESSION</code>，<code>before()</code> 会用它替换默认过滤表达式。
+        </p>
+
+        <h2 id="end-to-end">端到端：一次提问到底发生了什么</h2>
+        <div class="steps">
+          <li>
+            <span class="sh">① 用户问题进入 Advisor 链</span>
+            <div>
+              <code>QuestionAnswerAdvisor</code> 的 order 是 0，位于工具 Advisor（<code>MIN+300</code>）<strong>内侧</strong>；
+              纯 RAG 调用没有工具，所以它等价于紧贴模型调用。带工具的对话里，它会在每轮工具循环中重新检索。
+            </div>
+          </li>
+          <li>
+            <span class="sh">② 问题向量化</span>
+            <div>用写入时同一个 <code>EmbeddingModel</code> 把问题转成 384 维向量。</div>
+          </li>
+          <li>
+            <span class="sh">③ 相似度检索</span>
+            <div>
+              <code>SimpleVectorStore</code> 对所有向量算余弦相似度，按分数降序，过滤阈值后取前 K 条。
+              <span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/SimpleVectorStore.java:156">SimpleVectorStore.java:156</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">④ 拼提示词</span>
+            <div>检索结果填进默认模板，追加到用户消息末尾。</div>
+          </li>
+          <li>
+            <span class="sh">⑤ 调 ChatModel</span>
+            <div>DeepSeek 只看到「问题 + 检索到的上下文」，它不知道向量库的存在。</div>
+          </li>
+          <li>
+            <span class="sh">⑥ 返回答案</span>
+            <div>回答里通常不会带出处；要展示引用，需要自己从检索结果里取 metadata。</div>
+          </li>
+        </div>
+
+        <h2 id="cheatsheet">速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>写法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>建内存向量库</td>
+                <td><code>SimpleVectorStore.builder(embeddingModel).build()</code></td>
+              </tr>
+              <tr>
+                <td>切分文档</td>
+                <td><code>TokenTextSplitter.builder().build().apply(docs)</code></td>
+              </tr>
+              <tr>
+                <td>写入</td>
+                <td><code>vectorStore.add(documents)</code></td>
+              </tr>
+              <tr>
+                <td>手动检索</td>
+                <td><code>vectorStore.similaritySearch(SearchRequest.builder().query(q).topK(4).build())</code></td>
+              </tr>
+              <tr>
+                <td>挂 RAG Advisor</td>
+                <td><code>QuestionAnswerAdvisor.builder(vectorStore).build()</code></td>
+              </tr>
+              <tr>
+                <td>改召回参数</td>
+                <td><code>.searchRequest(SearchRequest.builder().topK(4).similarityThreshold(0.6).build())</code></td>
+              </tr>
+              <tr>
+                <td>换提示词模板</td>
+                <td><code>.promptTemplate(new PromptTemplate("..."))</code></td>
+              </tr>
+              <tr>
+                <td>按 metadata 过滤</td>
+                <td>上下文放 <code>QuestionAnswerAdvisor.FILTER_EXPRESSION</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">启动报「No EmbeddingModel bean」</span>
+          <p>
+            <strong>因为</strong>只引了 DeepSeek 的 starter，它只提供 ChatModel。<strong>改成</strong>再引一个
+            embedding provider（本章用 <code>spring-ai-starter-model-transformers</code>）。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">问了半天，模型总说「无法回答」</span>
+          <p>
+            <strong>因为</strong>阈值太高或切块太碎，检索没命中。<strong>改成</strong>先把
+            <code>similarityThreshold</code> 降到 0 看能不能召回，再逐步上调；同时检查切块后每块是否还保留完整语义。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">答非所问，但文档里明明有答案</span>
+          <p>
+            <strong>因为</strong>默认 <code>topK=4</code> 且阈值 0，无关块挤占了上下文。<strong>改成</strong>加 metadata
+            过滤（产品线、版本、语言），或先把文档按主题分库，别把所有内容塞进一个库。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">入库很慢</span>
+          <p>
+            <strong>因为</strong><code>SimpleVectorStore.doAdd</code> 是<strong>逐条</strong>调用
+            <code>embeddingModel.embed(document)</code>，不是批量。文档多时要么换支持批量的向量库，要么自己分批并发。
+            <span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/SimpleVectorStore.java:115">SimpleVectorStore.java:115</span>
+          </p>
+        </div>
+        <div class="callout tip">
+          <span class="ct">先做「能召回」，再做「答得好」</span>
+          <p>
+            调 RAG 的顺序应该是：检索结果对不对 → 提示词有没有把它们用上 → 回答有没有超出上下文。先盯着最终答案调
+            提示词，通常是在错误的地基上盖楼。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>为什么 ChatModel 和 EmbeddingModel 必须分开引？换 embedding 模型会影响什么？</li>
+          <li><code>similarityThreshold = 0</code> 时，检索结果会发生什么？为什么这可能导致幻觉？</li>
+          <li>切块大小从 800 调到 200，召回与回答质量可能分别怎么变？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把 <code>topK</code> 从 4 改成 1 和 10，问同一个问题，对比回答与 token 用量。</li>
+          <li>给每个 <code>Document</code> 加 <code>metadata</code>（如 <code>category=refund</code>），用过滤表达式只查退款政策。</li>
+          <li>把阈值调到 0.9，观察「无法回答」出现频率，再降回 0.5，记录差异。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章「08 Embedding 与向量库选型」会把这一章的 <code>SimpleVectorStore</code> 换成真正的向量库：
+          维度怎么对齐、索引怎么建、pgvector / Redis / Milvus 各自适合什么场景。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

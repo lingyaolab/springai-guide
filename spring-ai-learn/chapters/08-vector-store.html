@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 Embedding 与向量库选型：EmbeddingModel API、维度对齐与 1536 兜底、三种距离度量、pgvector/Redis/Milvus 取舍、HNSW 索引与批量写入。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="08 Embedding 与向量库选型 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="EmbeddingModel API、维度对齐、距离度量、pgvector/Redis/Milvus 取舍、HNSW 与批量写入。" />
+    <title>08 Embedding 与向量库选型 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="08-vector-store" data-root="..">
+    <main>
+      <article class="article">
+        <h1>08 · Embedding 与向量库选型</h1>
+        <p class="lede">
+          向量库不是「装个数据库」，它有三个必须一次性想清楚的约束：<strong>维度</strong>决定表结构、
+          <strong>距离度量</strong>决定排序、<strong>索引类型</strong>决定召回率与延迟。换 embedding 模型往往意味着
+          <strong>整库重建</strong>，所以这一章先把约束讲清，再给选型表。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>说清 <code>EmbeddingModel</code> 的四个方法与 <code>dimensions()</code> 的真实开销</li>
+          <li>解释为什么换 embedding 模型必须重建索引，以及维度不匹配会在哪一步报错</li>
+          <li>在余弦、欧氏、内积三种度量之间做出有依据的选择</li>
+          <li>用 pgvector 建表、建 HNSW 索引，并知道 <code>initialize-schema</code> 该设什么</li>
+        </ul>
+
+        <h2 id="why">先说为什么：向量库 = 存储 + 索引 + 度量</h2>
+        <p>
+          很多人把向量库当成「能存 float 数组的数据库」。真正决定检索质量的，是三者一起：
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">存储：向量 + 原文 + metadata</span>
+            <div class="ld">原文用于拼提示词，metadata 用于过滤（产品线、语言、版本）。</div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">索引：HNSW / IVFFlat / FLAT</span>
+            <div class="ld">
+              近似最近邻（ANN）用一点召回率换数量级的速度。数据量小的时候，暴力扫描反而更准。
+            </div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">度量：cosine / euclidean / inner product</span>
+            <div class="ld">排序规则的数学定义，必须与 embedding 模型的训练方式匹配。</div>
+          </div>
+        </div>
+        <div class="callout">
+          <span class="ct">为什么「换模型 = 重建库」</span>
+          <p>
+            向量的每一维含义由模型决定。模型 A 的第 7 维和模型 B 的第 7 维毫无关系，两个模型产出的向量放在一起比较
+            没有意义；维度也可能不同（384 / 768 / 1536 / 3072）。所以变更 embedding 模型时，必须把全部文档重新
+            embed 一遍，写入新表或清空旧表。
+          </p>
+        </div>
+
+        <h2 id="embed">EmbeddingModel：四个方法，一个隐藏成本</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>方法</th>
+                <th>用途</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>embed(String)</code></td>
+                <td>单条文本 → <code>float[]</code></td>
+              </tr>
+              <tr>
+                <td><code>embed(Document)</code></td>
+                <td>按 metadata 模式拼内容后 embed</td>
+              </tr>
+              <tr>
+                <td><code>embed(List&lt;String&gt;)</code></td>
+                <td>批量，返回 <code>List&lt;float[]&gt;</code></td>
+              </tr>
+              <tr>
+                <td><code>embedForResponse(List&lt;String&gt;)</code></td>
+                <td>批量并保留 usage 等元数据</td>
+              </tr>
+              <tr>
+                <td><code>dimensions()</code></td>
+                <td><strong>默认实现会真的调一次远程接口</strong>（embed 一个 "Test String"）</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre data-lang="java" data-file="EmbeddingModel.dimensions() 的默认实现">default int dimensions() {
+    return embed("Test String").length;
+}</pre>
+        <p class="src-line">
+          接口定义<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/embedding/EmbeddingModel.java:39">EmbeddingModel.java:39</span>；
+          <code>dimensions()</code> 的默认实现<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/embedding/EmbeddingModel.java:137">EmbeddingModel.java:137</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">启动时莫名多了一次（甚至计费的）embedding 调用</span>
+          <p>
+            原因通常是向量库在初始化时问 <code>embeddingModel.dimensions()</code>，而默认实现会真的请求一次。
+            已知维度时，在自定义 <code>EmbeddingModel</code> 里覆盖 <code>dimensions()</code>，或在向量库配置里显式
+            写 <code>dimensions</code>，就能避免。
+          </p>
+        </div>
+
+        <h2 id="dimension">维度对齐：三个数字的关系</h2>
+        <p>以 pgvector 为例，建表语句里的 <code>vector(N)</code> 决定了这一列能存多少维：</p>
+        <pre data-lang="sql" data-file="PgVectorStore 建表（简化）">CREATE TABLE IF NOT EXISTS vector_store (
+    id        uuid PRIMARY KEY,
+    content   text,
+    metadata  json,
+    embedding vector(1536)
+);</pre>
+        <p><code>N</code> 从哪来？按优先级：</p>
+        <div class="steps">
+          <li>
+            <span class="sh">① 配置显式指定</span>
+            <div>
+              <code>spring.ai.vectorstore.pgvector.dimensions</code>，默认是 <code>-1</code>（未指定）。
+              <span class="src" data-src="auto-configurations/vector-stores/spring-ai-autoconfigure-vector-store-pgvector/src/main/java/org/springframework/ai/vectorstore/pgvector/autoconfigure/PgVectorStoreProperties.java:37">PgVectorStoreProperties.java:37</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">② 问 embedding 模型</span>
+            <div>
+              调 <code>embeddingModel.dimensions()</code>；<code>all-MiniLM-L6-v2</code> 是 384，OpenAI
+              <code>text-embedding-3-small</code> 是 1536。
+              <span class="src" data-src="vector-stores/spring-ai-pgvector-store/src/main/java/org/springframework/ai/vectorstore/pgvector/PgVectorStore.java:505">PgVectorStore.java:505</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">③ 兜底 1536</span>
+            <div>
+              拿不到维度时打 warn 并回退到 OpenAI 的默认维度。这个兜底很危险：模型是 384 维时，表会被建成 1536 维，
+              写入直接失败。
+              <span class="src" data-src="vector-stores/spring-ai-pgvector-store/src/main/java/org/springframework/ai/vectorstore/pgvector/PgVectorStore.java:511">PgVectorStore.java:511</span>
+            </div>
+          </li>
+        </div>
+        <div class="callout warn">
+          <span class="ct">模式校验默认是关的</span>
+          <p>
+            <code>spring.ai.vectorstore.pgvector.schema-validation</code> 默认 <code>false</code>。开启后，表已存在
+            但维度不一致时会明确抛「Actual vector dimensions is X, required vector dimensions is Y」，而不是在写入时
+            报一个难懂的 SQL 错误。生产环境建议打开。
+          </p>
+        </div>
+        <p class="src-line">
+          维度不一致的抛错点<span class="src" data-src="vector-stores/spring-ai-pgvector-store/src/main/java/org/springframework/ai/vectorstore/pgvector/PgVectorSchemaValidator.java:160">PgVectorSchemaValidator.java:160</span>。
+        </p>
+
+        <h2 id="metric">距离度量：三种，别选错</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>度量</th>
+                <th>直觉</th>
+                <th>适用</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>COSINE_DISTANCE</code></td>
+                <td>只看方向，不看长度</td>
+                <td>文本 embedding 的默认选择，大多数模型适用</td>
+              </tr>
+              <tr>
+                <td><code>EUCLIDEAN_DISTANCE</code></td>
+                <td>直线距离</td>
+                <td>向量已归一化时与余弦等价；图像特征常用</td>
+              </tr>
+              <tr>
+                <td><code>NEGATIVE_INNER_PRODUCT</code></td>
+                <td>点积越大越相似</td>
+                <td>模型明确要求内积、且向量已归一化时性能最好</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          pgvector 的默认是余弦距离，索引操作符类也随之确定（<code>vector_cosine_ops</code>）。<strong>度量与索引
+          是一起建的</strong>：改了度量，索引必须重建，否则查询用不上索引，退化成全表扫描。
+        </p>
+        <p class="src-line">
+          默认度量与索引类型<span class="src" data-src="auto-configurations/vector-stores/spring-ai-autoconfigure-vector-store-pgvector/src/main/java/org/springframework/ai/vectorstore/pgvector/autoconfigure/PgVectorStoreProperties.java:39">PgVectorStoreProperties.java:39</span>；
+          建索引语句<span class="src" data-src="vector-stores/spring-ai-pgvector-store/src/main/java/org/springframework/ai/vectorstore/pgvector/PgVectorStore.java:454">PgVectorStore.java:454</span>。
+        </p>
+
+        <h2 id="stores">选型：先问「你已有什么」</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>向量库</th>
+                <th>starter</th>
+                <th>适合</th>
+                <th>代价</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>pgvector</td>
+                <td><code>spring-ai-starter-vector-store-pgvector</code></td>
+                <td>已有 PostgreSQL；要事务、SQL、备份一体化</td>
+                <td>千万级以上需要分区/调参；HNSW 建索引慢</td>
+              </tr>
+              <tr>
+                <td>Redis</td>
+                <td><code>spring-ai-starter-vector-store-redis</code></td>
+                <td>低延迟、已有 Redis、要 TTL</td>
+                <td>依赖 RedisJSON + RediSearch 模块</td>
+              </tr>
+              <tr>
+                <td>Milvus</td>
+                <td><code>spring-ai-starter-vector-store-milvus</code></td>
+                <td>亿级向量、专业向量检索</td>
+                <td>独立集群，运维成本最高</td>
+              </tr>
+              <tr>
+                <td>Elasticsearch / OpenSearch</td>
+                <td><code>...-elasticsearch</code> / <code>...-opensearch</code></td>
+                <td>已有搜索集群，要混合检索（BM25 + 向量）</td>
+                <td>索引 mapping 与内存调优复杂</td>
+              </tr>
+              <tr>
+                <td>SimpleVectorStore</td>
+                <td>无（手动建 Bean）</td>
+                <td>演示、单机小数据、测试</td>
+                <td>纯内存、暴力扫描、重启即丢</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout tip">
+          <span class="ct">默认建议</span>
+          <p>
+            已经有 PostgreSQL 就用 pgvector：少一个组件、能和业务数据一起备份、SQL 过滤 metadata 很自然。
+            只有在「向量规模上亿」或「延迟要求极苛刻」时，才值得引入独立向量库。
+          </p>
+        </div>
+
+        <h2 id="pgvector">pgvector：一条命令起库，四行配置接上</h2>
+        <pre data-lang="bash" data-file="docker">docker run -d --name pgvector -p 5432:5432 \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=vectordb \
+  pgvector/pgvector:pg17</pre>
+        <pre data-lang="yaml" data-file="application.yml">spring:
+  ai:
+    vectorstore:
+      pgvector:
+        initialize-schema: true        # 演示用；生产建议 false，由 Flyway 管
+        dimensions: 384                # all-MiniLM-L6-v2；不写则问模型
+        index-type: HNSW               # HNSW / IVFFLAT / NONE
+        distance-type: COSINE_DISTANCE
+        schema-validation: true
+        table-name: vector_store
+        max-document-batch-size: 10000</pre>
+        <p>
+          <code>initialize-schema=true</code> 时，启动会依次执行：创建 <code>vector</code> / <code>hstore</code> /
+          <code>uuid-ossp</code> 扩展 → 建 schema → 建表 → 建索引。所以数据库账号需要有建扩展的权限。
+        </p>
+        <p class="src-line">
+          默认表名与批量上限<span class="src" data-src="vector-stores/spring-ai-pgvector-store/src/main/java/org/springframework/ai/vectorstore/pgvector/PgVectorStore.java:165">PgVectorStore.java:165</span>、
+          <span class="src" data-src="vector-stores/spring-ai-pgvector-store/src/main/java/org/springframework/ai/vectorstore/pgvector/PgVectorStore.java:175">PgVectorStore.java:175</span>；
+          建扩展与建表<span class="src" data-src="vector-stores/spring-ai-pgvector-store/src/main/java/org/springframework/ai/vectorstore/pgvector/PgVectorStore.java:429">PgVectorStore.java:429</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">配置项默认值有一个坑：<code>initialize-schema</code> 默认是 false</span>
+          <p>
+            向量库的通用属性默认<strong>不建表</strong>，需要显式 opt-in。第一次跑 demo 忘了开，典型报错是
+            <code>relation "vector_store" does not exist</code>。
+            <span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/properties/CommonVectorStoreProperties.java:33">CommonVectorStoreProperties.java:33</span>
+          </p>
+        </div>
+
+        <h2 id="batch">批量写入：8191 与 90%</h2>
+        <p>
+          一次 embedding 请求能带的 token 数有上限。默认的 <code>TokenCountBatchingStrategy</code> 按
+          <strong>8191 token</strong> 估算，并预留 <strong>10%</strong> 作为安全余量，也就是实际按约 7371 token 分批。
+        </p>
+        <pre data-lang="java" data-file="自定义分批">@Bean
+BatchingStrategy batchingStrategy() {
+    return new TokenCountBatchingStrategy(
+            EncodingType.CL100K_BASE,
+            4000,          // 更保守的输入上限
+            0.1);          // 预留 10%
+}</pre>
+        <p>
+          它<strong>没有 builder</strong>，只能走构造器——这是读源码才会发现的细节，别照抄成
+          <code>TokenCountBatchingStrategy.builder()</code>。其中 <code>EncodingType</code> 来自
+          <code>com.knuddels.jtokkit.api</code>，<code>BatchingStrategy</code> 来自
+          <code>org.springframework.ai.embedding</code>。
+        </p>
+        <p class="src-line">
+          默认 token 上限<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/embedding/TokenCountBatchingStrategy.java:59">TokenCountBatchingStrategy.java:59</span>，
+          预留比例<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/embedding/TokenCountBatchingStrategy.java:65">TokenCountBatchingStrategy.java:65</span>。
+        </p>
+        <div class="callout">
+          <span class="ct">分批与限流是两回事</span>
+          <p>
+            分批解决「单次请求太大」，不解决「每秒请求太多」。厂商侧通常还有 RPM / TPM 限流，入库几十万文档时要
+            自己加并发控制与重试退避。
+          </p>
+        </div>
+
+        <h2 id="ops">迁移与运维：换模型时怎么不炸</h2>
+        <ol>
+          <li><strong>新表 + 双写</strong>：用新维度建一张新表，后台重新 embed 全部文档，写完切读流量。</li>
+          <li><strong>不要原地改列</strong>：<code>ALTER TABLE ... TYPE vector(768)</code> 在数据量大时非常慢，且旧向量本身已失效。</li>
+          <li><strong>保留原文</strong>：<code>content</code> 字段必须存，否则换模型时无法重新 embedding。</li>
+          <li><strong>记录模型版本</strong>：在 metadata 里写 <code>embedding_model</code>，排查「为什么这两条不相似」时非常有用。</li>
+        </ol>
+
+        <h2 id="cheatsheet">速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>写法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>看模型维度</td>
+                <td><code>embeddingModel.dimensions()</code>（会真调一次）</td>
+              </tr>
+              <tr>
+                <td>显式指定维度</td>
+                <td><code>spring.ai.vectorstore.pgvector.dimensions=384</code></td>
+              </tr>
+              <tr>
+                <td>首次建表</td>
+                <td><code>initialize-schema=true</code></td>
+              </tr>
+              <tr>
+                <td>打开模式校验</td>
+                <td><code>schema-validation=true</code></td>
+              </tr>
+              <tr>
+                <td>换索引类型</td>
+                <td><code>index-type=HNSW / IVFFLAT / NONE</code></td>
+              </tr>
+              <tr>
+                <td>换度量</td>
+                <td><code>distance-type=COSINE_DISTANCE / EUCLIDEAN_DISTANCE / NEGATIVE_INNER_PRODUCT</code></td>
+              </tr>
+              <tr>
+                <td>改批量</td>
+                <td>自定义 <code>BatchingStrategy</code> Bean</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">启动报 <code>relation "vector_store" does not exist</code></span>
+          <p>
+            <strong>因为</strong><code>initialize-schema</code> 默认 false。<strong>改成</strong>首次设为 true，
+            或先用迁移脚本建表再设回 false。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">写入报维度不匹配</span>
+          <p>
+            <strong>因为</strong>表是按 1536 建的，模型输出 384（或反过来）。<strong>改成</strong>显式设置
+            <code>dimensions</code>，并开启 <code>schema-validation</code> 让问题在启动时就暴露。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">换了 embedding 模型，检索结果全乱</span>
+          <p>
+            <strong>因为</strong>新旧向量在同一个空间里比较。<strong>改成</strong>换模型必须全量重 embed，
+            不能只换配置。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">查询慢，但数据量不大</span>
+          <p>
+            <strong>因为</strong>度量与索引操作符类不匹配，或者根本没建索引（<code>index-type=NONE</code>）。
+            <strong>改成</strong>确认索引存在且使用对应 <code>*_ops</code>，用 <code>EXPLAIN</code> 看是否走索引。
+          </p>
+        </div>
+        <div class="callout tip">
+          <span class="ct">metadata 过滤比调 topK 更有效</span>
+          <p>
+            当你有明确的业务维度（租户、产品线、语言、版本）时，先过滤再排序，比把 topK 调大再指望模型自己挑
+            更稳、更便宜。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>为什么 <code>dimensions()</code> 的默认实现可能产生一次真实计费？怎么避免？</li>
+          <li>余弦距离与内积在什么条件下等价？为什么这会影响索引选择？</li>
+          <li>把 embedding 模型从 384 维换成 1536 维，需要动哪些东西？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>用 docker 起 pgvector，开 <code>initialize-schema=true</code>，连库后用 <code>\d vector_store</code> 看表结构。</li>
+          <li>把 <code>dimensions</code> 故意写成 768，观察开启 <code>schema-validation</code> 前后的报错差异。</li>
+          <li>用 <code>EXPLAIN ANALYZE</code> 对比 <code>index-type=HNSW</code> 与 <code>NONE</code> 的查询计划。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章「09 高级检索」会把 topK 与阈值的调参升级成工程手段：metadata 过滤、查询改写、多路召回与重排。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

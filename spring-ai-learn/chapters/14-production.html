@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 生产化：默认重试 10 次/5 倍退避的代价、4xx 与 429 为什么不重试、三层超时、限流、多模型降级与 token 成本估算。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="14 生产化：超时、重试、限流与成本 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="重试默认值的代价、429 不重试、三层超时、限流、多模型降级与成本估算。" />
+    <title>14 生产化：超时、重试、限流与成本 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="14-production" data-root="..">
+    <main>
+      <article class="article">
+        <h1>14 · 生产化</h1>
+        <p class="lede">
+          把 demo 放上线，最先出事的往往不是模型答得不好，而是<strong>一次超时被重试放大成十次</strong>、
+          <strong>429 被当成不可重试直接失败</strong>、<strong>流式连接挂了一小时</strong>。
+          这一章用源码里的默认值解释这些现象，并给出可落地的配置。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>说清默认重试策略的真实代价，并改成适合在线服务的参数</li>
+          <li>解释为什么 4xx 默认不重试、429 为什么也不重试，以及怎么改</li>
+          <li>把超时拆成连接、读、流式总时长三层，分别配置</li>
+          <li>用多模型降级与成本估算，给服务加上「贵的时候能退」的能力</li>
+        </ul>
+
+        <h2 id="why">先说为什么：AI 调用的失败模式与普通 HTTP 不同</h2>
+        <p>
+          普通接口失败通常是「挂了」，重试一次就好。模型调用失败有更多形态：限流（429）、超时（生成到一半）、
+          内容审核拒绝、上下文超长、余额不足。把它们混在一起无脑重试，轻则延迟爆炸，重则账单翻倍。
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">可重试：网络抖动、5xx、连接重置</span>
+            <div class="ld">重试有意义，但要限次数、限总时长。</div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">不该重试：401、403、404、上下文超长、内容审核</span>
+            <div class="ld">重试一百次结果一样，只会浪费钱。</div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">要特殊处理：429 限流</span>
+            <div class="ld">应该退避 + 排队，而不是立刻放弃，也不是立刻重试。</div>
+          </div>
+        </div>
+
+        <h2 id="retry">重试：默认值有多激进</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>参数</th>
+                <th>默认值</th>
+                <th>问题</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>最大重试次数</td>
+                <td>10</td>
+                <td>配置项叫 <code>max-attempts</code>，源码却传给 <code>maxRetries</code>：加首次一共最多 11 次请求</td>
+              </tr>
+              <tr>
+                <td>初始间隔</td>
+                <td>2 秒</td>
+                <td>对在线接口来说太长</td>
+              </tr>
+              <tr>
+                <td>退避倍数</td>
+                <td>5</td>
+                <td>2s → 10s → 50s → 180s</td>
+              </tr>
+              <tr>
+                <td>最大间隔</td>
+                <td>3 分钟</td>
+                <td>最坏总等待超过 20 分钟（约 22 分钟）</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          默认常量<span class="src" data-src="spring-ai-retry/src/main/java/org/springframework/ai/retry/RetryUtils.java:50">RetryUtils.java:50</span>；
+          配置属性<span class="src" data-src="auto-configurations/common/spring-ai-autoconfigure-retry/src/main/java/org/springframework/ai/retry/autoconfigure/SpringAiRetryProperties.java:39">SpringAiRetryProperties.java:39</span>。
+        </p>
+        <pre data-lang="yaml" data-file="建议的在线服务配置">spring:
+  ai:
+    retry:
+      max-attempts: 3
+      backoff:
+        initial-interval: 500ms
+        multiplier: 2
+        max-interval: 5s
+      on-client-errors: false
+      on-http-codes: [429]        # 限流也重试，但走上面的短退避
+      exclude-on-http-codes: [400, 401, 403, 404, 413]</pre>
+        <div class="callout">
+          <span class="ct">哪些异常会被重试</span>
+          <p>
+            默认模板只重试 <code>TransientAiException</code> 与 <code>ResourceAccessException</code>（网络层）；
+            4xx 会被错误处理器归类为 <code>NonTransientAiException</code>，直接抛出。这个分类发生在响应错误处理器里，
+            不是模型层。<span class="src" data-src="spring-ai-retry/src/main/java/org/springframework/ai/retry/RetryUtils.java:111">RetryUtils.java:111</span>
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct"><code>max-attempts</code> 其实是「重试次数」</span>
+          <p>
+            <code>SpringAiRetryAutoConfiguration</code> 把它传给 <code>RetryPolicy.maxRetries(...)</code>，
+            所以设 3 是「重试 3 次、总共最多 4 次请求」，不是「总共 3 次」。
+            <span class="src" data-src="auto-configurations/common/spring-ai-autoconfigure-retry/src/main/java/org/springframework/ai/retry/autoconfigure/SpringAiRetryAutoConfiguration.java:66">SpringAiRetryAutoConfiguration.java:66</span>
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">429 默认不重试，这是个常见的「反直觉」</span>
+          <p>
+            429 属于 4xx，因此默认被归为不可重试。高并发下你会看到大量「限流就失败」而不是「等一等再试」。
+            正确做法：要么 <code>on-http-codes: [429]</code>，要么在业务层用令牌桶/队列自己控制速率，
+            并把重试预算留给上游抖动。
+          </p>
+        </div>
+
+        <h2 id="timeout">超时：三层，别只设一个</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>层</th>
+                <th>典型值</th>
+                <th>设置位置</th>
+                <th>失败表现</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>连接超时</td>
+                <td>3–5s</td>
+                <td>RestClient / WebClient 的 request factory</td>
+                <td>连不上，快速失败，可重试</td>
+              </tr>
+              <tr>
+                <td>读超时（首字节）</td>
+                <td>30–60s</td>
+                <td>HTTP 客户端</td>
+                <td>模型排队或生成慢，超时</td>
+              </tr>
+              <tr>
+                <td>流式总时长</td>
+                <td>60–120s</td>
+                <td><code>Flux.timeout(...)</code></td>
+                <td>连接建立后一直有数据但总也结束不了</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre data-lang="java" data-file="同步客户端超时">@Bean
+RestClientCustomizer restClientTimeout() {
+    return builder -&gt; {
+        var factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(5_000);    // 毫秒
+        factory.setReadTimeout(60_000);
+        builder.requestFactory(factory);
+    };
+}</pre>
+        <p>
+          Spring AI 的模型自动装配使用容器里的 <code>RestClient.Builder</code> / <code>WebClient.Builder</code>，
+          所以通过 Boot 的 customizer 定制一次，对所有厂商生效。流式则一定在 <code>Flux</code> 上再加一层总超时，
+          因为「读超时」管不到一个持续有数据、但永不结束的连接。
+        </p>
+        <div class="callout warn">
+          <span class="ct">超时不是越小越好</span>
+          <p>
+            推理模型的思考阶段可能长时间没有输出。把首字节超时设成 5 秒，会把正常请求全部杀掉。
+            按 P99 设定，并给流式留更长的总时长。
+          </p>
+        </div>
+
+        <h2 id="rate-limit">限流：应用层不控制，厂商会替你控制</h2>
+        <p>
+          Spring AI 没有内置限流器。可选三处：网关（最外层）、应用（按用户/租户）、厂商（TPM/RPM）。
+          常见组合是「网关做粗粒度 + 应用做令牌桶 + 监控 429 比例」。
+        </p>
+        <pre data-lang="java" data-file="按租户限流（Resilience4j 示例）">@Bean
+RateLimiter tenantLimiter() {
+    var config = RateLimiterConfig.custom()
+            .limitForPeriod(20)                       // 每秒 20 次
+            .limitRefreshPeriod(Duration.ofSeconds(1))
+            .timeoutDuration(Duration.ZERO)           // 拿不到就快速失败
+            .build();
+    return RateLimiter.of("llm", config);
+}</pre>
+        <p>
+          限流之外还要限制<strong>并发</strong>：几十个流式请求同时挂着会占满连接池和 <code>boundedElastic</code>
+          线程。用信号量或 WebFlux 的并发控制，别让慢请求把整个服务拖住。
+        </p>
+        <div class="callout tip">
+          <span class="ct">把「等待」变成产品体验</span>
+          <p>
+            被限流时返回「当前排队第 N 位」或「预计 10 秒」，比直接 500 好得多。流式接口可以先发一个
+            <code>event: queue</code>，再发正文。
+          </p>
+        </div>
+
+        <h2 id="fallback">降级：主模型挂了怎么办</h2>
+        <p>
+          Spring AI 通过 <code>spring.ai.model.chat</code> 选择模型，但那是启动期决策。运行期降级需要自己包一层：
+        </p>
+        <pre data-lang="java" data-file="FallbackChatModel">class FallbackChatModel implements ChatModel {
+
+    private final List&lt;ChatModel&gt; delegates;
+
+    FallbackChatModel(ChatModel primary, ChatModel secondary) {
+        this.delegates = List.of(primary, secondary);
+    }
+
+    @Override
+    public ChatResponse call(Prompt prompt) {
+        RuntimeException last = null;
+        for (ChatModel model : this.delegates) {
+            try {
+                return model.call(prompt);
+            }
+            catch (RuntimeException ex) {
+                last = ex;   // 记录并尝试下一个
+            }
+        }
+        throw Objects.requireNonNull(last);
+    }
+
+    @Override
+    public ChatOptions getOptions() {
+        return this.delegates.get(0).getOptions();
+    }
+
+    @Override
+    public Flux&lt;ChatResponse&gt; stream(Prompt prompt) {
+        // 流式降级只适合「首个 chunk 之前」失败；中途失败应补一句兜底文本
+        return this.delegates.get(0).stream(prompt);
+    }
+}</pre>
+        <div class="callout warn">
+          <span class="ct">降级不是免费的</span>
+          <p>
+            第二个模型的输出风格、结构化输出能力、上下文长度都可能不同。降级前要确认：提示词是否通用、
+            工具 schema 是否兼容、计费是否可接受。最稳的降级是「返回缓存/固定话术」，而不是换一个你没测过的模型。
+          </p>
+        </div>
+
+        <h2 id="cost">成本：先算清楚，再谈优化</h2>
+        <pre data-lang="java" data-file="按 token 估一次调用的成本">Usage usage = response.getMetadata().getUsage();
+
+BigDecimal inputPrice = new BigDecimal("0.0000005");   // 每 token 单价，按厂商价目表填
+BigDecimal outputPrice = new BigDecimal("0.000002");
+
+BigDecimal cost = inputPrice.multiply(BigDecimal.valueOf(usage.getPromptTokens()))
+        .add(outputPrice.multiply(BigDecimal.valueOf(usage.getCompletionTokens())));</pre>
+        <p>优化顺序（从收益最大、风险最低开始）：</p>
+        <ol>
+          <li><strong>减少输入 token</strong>：把 RAG 的 <code>topK</code> 从 10 降到 3–4，去掉重复上下文。</li>
+          <li><strong>减少调用次数</strong>：不要每轮都改写查询；缓存相同问题（包括语义缓存）。</li>
+          <li><strong>分级模型</strong>：分类、改写用小模型，最终回答用大模型。</li>
+          <li><strong>控制输出</strong>：设 <code>maxTokens</code>，要求结构化/简短输出。</li>
+          <li><strong>压缩历史</strong>：窗口裁剪 + 摘要，而不是把全部历史每轮重发。</li>
+        </ol>
+        <p class="src-line">
+          用量的字段来源<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/metadata/Usage.java:29">Usage.java:29</span>；
+          指标口径见第 13 章。
+        </p>
+
+        <h2 id="ops">上线前的检查清单</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>项</th>
+                <th>建议</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>重试</td>
+                <td>2–3 次，短退避；429 单独处理</td>
+              </tr>
+              <tr>
+                <td>超时</td>
+                <td>连接 5s / 读 60s / 流式总时长 90s</td>
+              </tr>
+              <tr>
+                <td>并发</td>
+                <td>按模型配额设置信号量，流式单独限</td>
+              </tr>
+              <tr>
+                <td>降级</td>
+                <td>缓存话术优先，其次备用模型</td>
+              </tr>
+              <tr>
+                <td>预算</td>
+                <td>按 token 指标做日/周告警</td>
+              </tr>
+              <tr>
+                <td>日志</td>
+                <td>不默认打印 prompt，开启时脱敏</td>
+              </tr>
+              <tr>
+                <td>压测</td>
+                <td>用录音回放或 Mock Server，别打真实厂商</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="cheatsheet">速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>写法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>改重试次数</td>
+                <td><code>spring.ai.retry.max-attempts</code></td>
+              </tr>
+              <tr>
+                <td>改退避</td>
+                <td><code>spring.ai.retry.backoff.*</code></td>
+              </tr>
+              <tr>
+                <td>让 429 可重试</td>
+                <td><code>spring.ai.retry.on-http-codes=[429]</code></td>
+              </tr>
+              <tr>
+                <td>排除某些码</td>
+                <td><code>spring.ai.retry.exclude-on-http-codes</code></td>
+              </tr>
+              <tr>
+                <td>连接/读超时</td>
+                <td><code>RestClientCustomizer</code> + request factory</td>
+              </tr>
+              <tr>
+                <td>流式总超时</td>
+                <td><code>Flux.timeout(Duration)</code></td>
+              </tr>
+              <tr>
+                <td>降级</td>
+                <td>自定义 <code>ChatModel</code> 包装多个 delegate</td>
+              </tr>
+              <tr>
+                <td>算成本</td>
+                <td><code>Usage</code> × 单价</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">一次故障后账单翻倍</span>
+          <p>
+            <strong>因为</strong>默认重试 10 次、退避 5 倍。<strong>改成</strong>在线服务把重试次数降到 2–3、
+            退避改成 2 倍，并设置总超时。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">限流时大量请求直接失败</span>
+          <p>
+            <strong>因为</strong>429 是 4xx，默认不重试。<strong>改成</strong><code>on-http-codes: [429]</code>，
+            或在入口做令牌桶，避免打到厂商限流。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">流式接口连接挂很久不释放</span>
+          <p>
+            <strong>因为</strong>只设了读超时，没设流式总时长。<strong>改成</strong>
+            <code>Flux.timeout(...)</code> + 客户端断开时取消，并检查代理的空闲超时。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">降级到备用模型后，结构化输出解析失败</span>
+          <p>
+            <strong>因为</strong>备用模型不支持原生 structured output，或提示词不适配。<strong>改成</strong>
+            降级时同时降级输出要求（返回纯文本），或只对「非关键路径」启用备用模型。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>默认重试策略最坏会让一次调用等多久？为什么在线服务不能直接用？</li>
+          <li>429 为什么默认不重试？有哪两种修正方式？</li>
+          <li>三层超时分别防的是什么问题？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把 <code>max-attempts</code> 改成 3、退避改成 2 倍，用一个必定 500 的桩模型观察总耗时。</li>
+          <li>模拟 429，分别在默认配置与 <code>on-http-codes: [429]</code> 下对比请求次数。</li>
+          <li>给第 07 章的问答接口加 <code>Flux.timeout(10s)</code>，用长回答触发超时并观察客户端行为。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          最后一章「15 综合案例」会把前 14 章组装成一个可上线的知识库问答服务：DeepSeek + 本地 embedding +
+          pgvector + RAG + 工具 + 记忆 + 流式 + 观测 + 降级。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

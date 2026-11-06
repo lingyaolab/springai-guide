@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 学习站的使用说明：三条学习主线、章节依赖图、前置知识自查、没有 API Key 能学到哪一步，以及每一章的固定结构。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="00 学习地图：怎么用本站 + 前置知识 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="三条学习主线、章节依赖图、前置知识自查、没有 API Key 能学到哪一步。" />
+    <title>00 学习地图：怎么用本站 + 前置知识 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="00-study-map" data-root="..">
+    <main>
+      <article class="article">
+        <h1>00 · 学习地图</h1>
+        <p class="lede">
+          这一章不写代码，只解决三个问题：<strong>官方文档已经很全，为什么还要看这里</strong>、<strong>这个站该怎么读</strong>、
+          <strong>你现在缺的是哪块前置知识</strong>。读完再决定从第几章开始。
+        </p>
+
+        <h2 id="why-site">为什么要再造一个文档站</h2>
+        <p>
+          官方中文站（<a href="https://docs.springframework.org.cn/spring-ai/reference/index.html" rel="noreferrer"
+            >docs.springframework.org.cn</a
+          >）质量很好，而且已经是中文。但它是一份 <strong>reference</strong>：按能力分篇，假设你知道自己要找什么。
+          初学者打开它，最常见的状态是「每一页都看得懂，但不知道先看哪一页」。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>官方文档的立场</th>
+                <th>初学者遇到的后果</th>
+                <th>本站怎么处理</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>按能力组织：chat / tools / RAG / vectors 各一篇</td>
+                <td>看完 chat 篇还不知道下一步该干什么，也不知道它们怎么组合成一个服务</td>
+                <td>按落地顺序重排：先能跑 → 再懂调用链 → 最后碰扩展点</td>
+              </tr>
+              <tr>
+                <td>默认你已经在 Spring 生态里</td>
+                <td>不知道为什么配置项前缀长这样，也不知道 <code>@Bean</code> 是谁注册的</td>
+                <td>把「自动装配」当主线讲：每个配置项都能指回一个 Properties 类</td>
+              </tr>
+              <tr>
+                <td>示例是片段，不承诺可编译</td>
+                <td>复制下来缺 import、缺依赖、缺 key，报错信息也对不上</td>
+                <td>每章给完整工程结构，代码块标注文件路径</td>
+              </tr>
+              <tr>
+                <td>版本更新快，博客滞后</td>
+                <td>搜到的例子是 1.x 写法，2.0 已经改名或删掉了</td>
+                <td>每章标 2.0.2 的破坏性变更，附录 D 集中列迁移表</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout tip">
+          <span class="ct">本站不做什么</span>
+          <p>
+            不重复 API 参考、不逐条翻译配置属性、不解释 MCP 协议规范本身。这些官方文档做得比一本教程更好，而且更新更及时。
+            本站只补四件事：<strong>顺序</strong>、<strong>可运行</strong>、<strong>选型</strong>、<strong>踩坑</strong>。
+          </p>
+        </div>
+
+        <h2 id="three-lines">三条学习主线：同一章读三遍</h2>
+        <p>每一章都切成三种可读法。不必一次全读，但<strong>别只读第一种</strong>——只照抄不改，一周后还是不会。</p>
+        <div class="compare">
+          <div class="col pick">
+            <h4>① 跟做线</h4>
+            <ul>
+              <li>「读完你能做到」+「最小可跑」+「逐行解读」</li>
+              <li>目标：10 分钟内看到程序真的输出东西</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4>② 理解线</h4>
+            <ul>
+              <li>「端到端」+「速查表」</li>
+              <li>目标：知道配置在哪个环节变成 Bean，数据在哪个环节变成字符串</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4>③ 避坑线</h4>
+            <ul>
+              <li>「陷阱与窍门」+「自检三问」+「动手练习」</li>
+              <li>目标：出错时能自己定位到具体配置项或代码行</li>
+            </ul>
+          </div>
+        </div>
+        <p>
+          实际建议：第一遍只走 ①，把代码跑起来；第二天通勤路上读 ②；等你真的撞到错误，再回来读 ③。
+          这时候的阅读吸收率最高，因为你带着问题来。
+        </p>
+
+        <h2 id="deps">章节依赖图：为什么是这个顺序</h2>
+        <p>
+          三条主线不是并列的，有明确的先后。下面这张图只画「不读前一章会卡住」的依赖，虚线表示可以跳。
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">00 学习地图 → 01 环境与依赖 → 02 ChatClient</span>
+            <div class="ld">
+              必须按顺序。01 解决「编译不过 / 启动失败」，02 解决「跑起来了但不知道一次请求发生了什么」。
+            </div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">03 Prompt 与结构化输出 · 04 流式 · 05 记忆 · 06 Advisor</span>
+            <div class="ld">
+              这四章是「对话能力」的四块地基。03 决定输出能不能被程序消费，04 决定体验，05 决定多轮，06 决定你能不能插手。
+              06 依赖 05，其余可独立读。
+            </div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">07 RAG 总览 → 08 向量库 → 09 高级检索</span>
+            <div class="ld">
+              RAG 必须按 07 → 08 → 09 读：07 告诉你数据怎么进来，08 告诉你存在哪，09 才谈召回质量。
+              07 依赖 02（ChatClient）与 06（QuestionAnswerAdvisor 本质是一个 Advisor）。
+            </div>
+          </div>
+          <div class="layer">
+            <span class="lt">10 Tool Calling → 11 MCP 客户端 → 12 MCP 服务端</span>
+            <div class="ld">
+              10 是「模型调用你的方法」，11 是把外部工具接进来，12 是把自己的能力暴露出去。
+              11、12 不依赖 10 的代码，但依赖 10 的概念，否则看不懂工具描述与参数 schema。
+            </div>
+          </div>
+          <div class="layer">
+            <span class="lt">13 可观测性与测试 · 14 生产化 · 15 综合案例 · 16 评测</span>
+            <div class="ld">
+              13、14 可以随时插读；15 是工程收口，要求前面至少读完 02、05、07、10；
+              16 回答「改了 prompt / 模型 / topK 之后到底变好没有」，依赖 07–09 与 13。
+            </div>
+          </div>
+        </div>
+        <div class="callout">
+          <span class="ct">为什么把「环境与依赖」单独一整章</span>
+          <p>
+            Spring AI 最容易失败的地方不是 API 用错，而是<strong>依赖和版本没对齐</strong>：Spring AI 2.0 需要
+            Spring Boot 4.x<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/getting-started.adoc:8"
+              >getting-started.adoc:8</span
+            >，而网上大量教程还是 Boot 3 + 1.x 的坐标。这一章把「装错」的每一种表现都列出来，比后面任何一章都省时间。
+          </p>
+        </div>
+
+        <h2 id="java-pre">前置知识自查：这些不会会卡在哪</h2>
+        <p>不需要精通，但下面每一条都会在具体章节里用到。括号里是「不会时会卡住的第一处」。</p>
+        <ul class="goals">
+          <li>
+            <strong>Spring Boot 基础</strong>：<code>@ConfigurationProperties</code>、<code>@Bean</code>、自动装配、
+            <code>application.yml</code> 的层级写法（卡在 01 章：不知道为什么只写 key 不写前缀也能生效）
+          </li>
+          <li>
+            <strong>Maven 依赖管理</strong>：<code>dependencyManagement</code>、BOM、<code>mvn dependency:tree</code>
+            （卡在 01 章：不知道该不该写 <code>&lt;version&gt;</code>）
+          </li>
+          <li>
+            <strong>Java 17 语法</strong>：record、文本块、<code>var</code>（卡在 02 章：示例里的
+            <code>record Answer(...)</code> 看不懂）
+          </li>
+          <li>
+            <strong>HTTP 与 JSON</strong>：请求头、状态码、流式响应（卡在 02 章：不知道 401 和 404 分别是谁返回的）
+          </li>
+          <li>
+            <strong>Reactor 一点点</strong>：<code>Flux</code>、<code>subscribe</code>、为什么流式要返回
+            <code>Flux</code>（卡在 04 章；02 章只需要会读，不需要会写）
+          </li>
+        </ul>
+        <div class="callout warn">
+          <span class="ct">如果你完全没写过 Spring Boot</span>
+          <p>
+            先去把官方 guide 的 <a href="https://spring.io/guides/gs/spring-boot" rel="noreferrer">Building a RESTful Web Service</a>
+            跑一遍，大约 30 分钟。本站不会重复讲 <code>@RestController</code>、依赖注入这些内容。
+          </p>
+        </div>
+
+        <h2 id="apikey">没有 API Key，能学到哪一步</h2>
+        <p>
+          DeepSeek 需要一个有效的 key（多数情况下要充值），但本站大部分内容是「读 + 编译」，不调用模型也能完成。按章节看：
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>阶段</th>
+                <th>没有 Key 能做什么</th>
+                <th>需要 Key 才能看到的现象</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>00–01 章</td>
+                <td>建工程、写配置、<code>mvn compile</code>、看懂自动装配链路</td>
+                <td>启动后第一次真实请求（401 也说明连通了，但要看到回答必须有 Key）</td>
+              </tr>
+              <tr>
+                <td>02 章</td>
+                <td>读懂 ChatClient 的每个方法、把参数改成自己的</td>
+                <td>流式输出的首字延迟、多轮记忆是否真的记住</td>
+              </tr>
+              <tr>
+                <td>03 章之后</td>
+                <td>结构化输出、RAG、工具的代码结构与配置</td>
+                <td>模型是否真的按 schema 返回、召回质量、工具是否被正确调用</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout tip">
+          <span class="ct">想完全零成本跑通</span>
+          <p>
+            可以换成本地 Ollama（<code>spring-ai-starter-model-ollama</code>）。本站默认用 DeepSeek，是因为它便宜、
+            国内直连、并且兼容 OpenAI 协议；换成 Ollama 只需要改依赖和三个配置项，01 章会给出对照。
+          </p>
+        </div>
+
+        <h2 id="how-read">每一章的固定结构与图例</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>小节</th>
+                <th>你会看到什么</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>读完你能做到</td>
+                <td>三条可验证的能力，做不到说明这一章还没读透</td>
+              </tr>
+              <tr>
+                <td>先说为什么</td>
+                <td>这个 API / 分层为什么存在，不用它会怎样</td>
+              </tr>
+              <tr>
+                <td>最小可跑</td>
+                <td>完整文件，含 <code>pom.xml</code> 与配置，复制即可运行</td>
+              </tr>
+              <tr>
+                <td>逐行解读</td>
+                <td>只讲容易懵的行，不逐字翻译代码</td>
+              </tr>
+              <tr>
+                <td>端到端</td>
+                <td>一次调用从配置到 HTTP 再到返回值的完整链路</td>
+              </tr>
+              <tr>
+                <td>速查表</td>
+                <td>这一章涉及的 API、配置项与默认值</td>
+              </tr>
+              <tr>
+                <td>陷阱与窍门</td>
+                <td>「你会看到 X → 因为 Y → 改成 Z」</td>
+              </tr>
+              <tr>
+                <td>自检三问 / 动手练习</td>
+                <td>确认你真的理解了，而不是抄对了</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          图例：<span class="src">文件名:行号</span> 这种胶囊是源码出处，单击复制路径、Ctrl/Cmd + 点击在 GitHub
+          打开；<span class="tag">下一轮</span> 表示章节已规划但尚未开写。
+        </p>
+
+        <h2 id="source-truth">事实来源：我怎么保证不编</h2>
+        <p>
+          本站只认 <strong>Spring AI 2.0.2</strong> 这一份源码。每个「默认值是 20」「前缀是
+          <code>spring.ai.deepseek.chat</code>」「这里会抛 IllegalArgumentException」都带 <code>file:line</code>，
+          并在发布前用脚本核对：
+        </p>
+        <ul>
+          <li><code>node tools/check-sources.cjs</code>：每条出处的文件是否存在、行号是否越界、大小写是否与磁盘一致</li>
+          <li><code>node tools/check-site.cjs</code>：站内链接、锚点、导航与实际小节标题是否一致</li>
+        </ul>
+        <p>
+          如果官方文档与源码冲突，以源码为准，并在正文里同时给出两边出处——这类差异会集中在附录 D。
+        </p>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          直接进 <a href="01-setup.html">01 环境与依赖</a>。如果你已经有一个 Boot 4 工程、只是想看 ChatClient
+          怎么用，可以跳到 <a href="02-chatclient.html">02 ChatClient</a>，但遇到启动失败时还是要回来读 01。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

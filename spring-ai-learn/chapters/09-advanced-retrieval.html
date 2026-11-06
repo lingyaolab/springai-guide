@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 高级检索：metadata 过滤、查询改写、多查询扩展、翻译与压缩、VectorStoreDocumentRetriever、重排钩子与 RetrievalAugmentationAdvisor 组装。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="09 高级检索：过滤、改写、多路召回与重排 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="metadata 过滤、查询改写、多查询、重排钩子与 RetrievalAugmentationAdvisor 组装。" />
+    <title>09 高级检索：过滤、改写、多路召回与重排 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="09-advanced-retrieval" data-root="..">
+    <main>
+      <article class="article">
+        <h1>09 · 高级检索</h1>
+        <p class="lede">
+          第 07 章的 RAG 只有两个旋钮：<code>topK</code> 和阈值。真实业务里，问题往往出在<strong>查询本身不完整</strong>
+          （「那它呢」）、<strong>库里混了不该检索的内容</strong>（别的租户、旧版本）、<strong>召回了但排序不对</strong>。
+          这一章把四类手段逐个讲清：过滤、改写、多路召回、重排。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 metadata 过滤把检索范围收窄到「当前租户 + 当前版本」，而不是事后让模型筛</li>
+          <li>解释多轮对话里为什么必须先改写查询，以及改写带来的额外 LLM 调用成本</li>
+          <li>用 <code>MultiQueryExpander</code> 做多路召回，并知道结果如何合并去重</li>
+          <li>用 <code>RetrievalAugmentationAdvisor</code> 把改写、召回、重排、拼装串成一条可配置的流水线</li>
+        </ul>
+
+        <h2 id="why">先说为什么：检索质量 = 查询 × 范围 × 排序</h2>
+        <p>
+          模型只能基于你给它的上下文回答。上下文错了，提示词写得再好也没用。检索质量可以拆成三个乘数：
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">查询：用户那句话适不适合检索</span>
+            <div class="ld">「那它呢」「再详细点」单独拿去检索，几乎必然召回错误内容。</div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">范围：该不该在这个库里查</span>
+            <div class="ld">多租户、多版本、多语言混在一个索引里，topK 再准也会串。</div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">排序：相似度高 ≠ 最有用</span>
+            <div class="ld">向量相似度是粗排，真正决定答案质量的是精排（rerank）。</div>
+          </div>
+        </div>
+
+        <h2 id="filter">metadata 过滤：先缩小范围，再谈相似度</h2>
+        <p>
+          <code>SearchRequest</code> 支持两种过滤写法：字符串 DSL 和 <code>Filter.Expression</code>。字符串形式类似 SQL 的
+          where：
+        </p>
+        <pre data-lang="text" data-file="过滤表达式">country == 'UK' &amp;&amp; year &gt;= 2020 &amp;&amp; isActive == true</pre>
+        <p class="src-line">
+          官方示例<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/api/vectordbs.adoc:165">vectordbs.adoc:165</span>。
+        </p>
+        <p>
+          但拼接字符串容易出注入与转义问题。更稳的是用 <code>FilterExpressionBuilder</code> 构造：
+        </p>
+        <pre data-lang="java" data-file="按租户与版本过滤">Filter.Expression filter = new FilterExpressionBuilder()
+        .and(
+                new FilterExpressionBuilder().eq("tenant", tenantId).build(),
+                new FilterExpressionBuilder().gte("version", 2).build())
+        .build();
+
+List&lt;Document&gt; docs = vectorStore.similaritySearch(
+        SearchRequest.builder().query(q).topK(4).filterExpression(filter).build());</pre>
+        <p class="src-line">
+          <code>eq/ne/gt/gte/lt/lte/in/nin/and/or</code> 都在 <span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/filter/FilterExpressionBuilder.java:60">FilterExpressionBuilder.java:60</span>。
+        </p>
+        <div class="callout tip">
+          <span class="ct">哪些字段适合放 metadata</span>
+          <p>
+            高基数、强约束、经常用来「排除」的字段：租户 ID、产品线、文档版本、语言、权限级别、生效日期。
+            不要把整段正文塞进 metadata——它不会参与相似度计算，只会让索引变大。
+          </p>
+        </div>
+
+        <h2 id="rewrite">查询改写：把「那它呢」变成可检索的问题</h2>
+        <p>
+          多轮对话里，用户第二句往往依赖上一句。直接拿它去检索向量库，召回的多半是无关内容。
+          <code>RewriteQueryTransformer</code> 会先让模型把问题改写成<strong>独立、完整、适合检索</strong>的句子。
+        </p>
+        <pre data-lang="java" data-file="改写">var rewrite = RewriteQueryTransformer.builder()
+        .chatClientBuilder(ChatClient.builder(chatModel))
+        .build();
+
+// 输入：「那退款呢？」（上文在聊运费）
+// 输出：「退款政策和退款流程是什么？」</pre>
+        <p>
+          它的默认提示词里有一个 <code>{targetSearchSystem}</code>，默认值是 <code>"vector store"</code>，
+          意思是「按向量库检索的习惯来改写」。你可以换成自己的领域描述，让改写更贴近业务词汇。
+        </p>
+        <p class="src-line">
+          默认目标系统<span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/preretrieval/query/transformation/RewriteQueryTransformer.java:55">RewriteQueryTransformer.java:55</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">改写是「多一次 LLM 调用」</span>
+          <p>
+            每次提问都会先调一次模型做改写，再调一次模型生成答案。延迟和成本都翻倍。优化方式：只在检测到指代词/短问句时
+            才改写，或用一个更小更快的模型专门做改写。
+          </p>
+        </div>
+
+        <h2 id="multi-query">多查询扩展：一次提问，召回多路结果</h2>
+        <p>
+          用户的措辞和文档的措辞经常对不上（「包邮」vs「免运费」）。<code>MultiQueryExpander</code> 让模型生成几个
+          语义相近但措辞不同的查询，分别检索，再合并。
+        </p>
+        <pre data-lang="java" data-file="多查询">var multiQuery = MultiQueryExpander.builder()
+        .chatClientBuilder(ChatClient.builder(chatModel))
+        .numberOfQueries(3)      // 默认 3
+        .includeOriginal(true)   // 默认 true：原始查询也算一路
+        .build();</pre>
+        <p><code>RetrievalAugmentationAdvisor</code> 内部的执行顺序是：</p>
+        <ol>
+          <li>逐个 <code>QueryTransformer</code> 改写；</li>
+          <li><code>QueryExpander</code> 展开成 N 个查询；</li>
+          <li>每个查询<strong>并行</strong>走一次检索（用 <code>CompletableFuture</code>）；</li>
+          <li><code>DocumentJoiner</code> 合并结果；</li>
+          <li>后处理（重排）；</li>
+          <li>拼进提示词。</li>
+        </ol>
+        <p class="src-line">
+          默认条数与是否保留原查询<span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/preretrieval/query/expansion/MultiQueryExpander.java:74">MultiQueryExpander.java:74</span>；
+          并行检索与合并<span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/advisor/RetrievalAugmentationAdvisor.java:129">RetrievalAugmentationAdvisor.java:129</span>。
+        </p>
+        <div class="callout">
+          <span class="ct">合并时按什么去重</span>
+          <p>
+            默认的 <code>ConcatenationDocumentJoiner</code> 按 <code>Document</code> 的 <strong>id</strong> 去重，
+            保留第一次出现的那条。所以同一段文档被多个查询命中时不会重复塞进上下文，但分数也不会被「投票加权」——
+            想做 RRF / 加权融合，要自己实现 <code>DocumentJoiner</code>。
+            <span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/retrieval/join/ConcatenationDocumentJoiner.java:58">ConcatenationDocumentJoiner.java:58</span>
+          </p>
+        </div>
+
+        <h2 id="translate-compress">翻译与压缩：两个特定场景的改写</h2>
+        <div class="compare">
+          <div class="col">
+            <h4>翻译：跨语言检索</h4>
+            <pre data-lang="java">var translate = TranslationQueryTransformer.builder()
+    .chatClientBuilder(ChatClient.builder(chatModel))
+    .targetLanguage("english")
+    .build();</pre>
+            <p>
+              知识库是英文、用户用中文提问时，把查询翻成英文再检索。目标语言必填，否则构造时断言失败。
+            </p>
+          </div>
+          <div class="col">
+            <h4>压缩：长对话里的指代</h4>
+            <pre data-lang="java">var compress = CompressionQueryTransformer.builder()
+    .chatClientBuilder(ChatClient.builder(chatModel))
+    .build();</pre>
+            <p>
+              把「历史 + 追问」压成一个自包含的问题，比单纯改写更适合多轮长对话。
+            </p>
+          </div>
+        </div>
+        <p class="src-line">
+          翻译的目标语言必填<span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/preretrieval/query/transformation/TranslationQueryTransformer.java:74">TranslationQueryTransformer.java:74</span>；
+          压缩的默认提示词<span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/preretrieval/query/transformation/CompressionQueryTransformer.java:50">CompressionQueryTransformer.java:50</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">不要在一条链上叠满所有 Transformer</span>
+          <p>
+            改写 + 翻译 + 压缩 + 多查询，一次提问可能触发 5 次以上 LLM 调用。按场景选 1–2 个就够：
+            多轮对话用压缩或改写；跨语言用翻译；术语不匹配用多查询。
+          </p>
+        </div>
+
+        <h2 id="retriever">VectorStoreDocumentRetriever：默认值仍然是「全收」</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>参数</th>
+                <th>不传时</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>similarityThreshold</code></td>
+                <td><code>0.0</code></td>
+                <td>接受所有结果</td>
+              </tr>
+              <tr>
+                <td><code>topK</code></td>
+                <td><code>4</code></td>
+                <td>每个查询各取 4 条</td>
+              </tr>
+              <tr>
+                <td><code>filterExpression</code></td>
+                <td><code>null</code></td>
+                <td>不过滤</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          第三项支持 <code>Supplier&lt;Filter.Expression&gt;</code>，意味着可以在<strong>每次请求时</strong>根据当前用户
+          动态计算过滤条件（租户、权限），而不是在启动时写死。
+        </p>
+        <pre data-lang="java" data-file="按请求动态过滤">var retriever = VectorStoreDocumentRetriever.builder()
+        .vectorStore(vectorStore)
+        .similarityThreshold(0.6)
+        .topK(4)
+        .filterExpression(() -&gt; new FilterExpressionBuilder()
+                .eq("tenant", TenantContext.current())
+                .build())
+        .build();</pre>
+        <p class="src-line">
+          默认值<span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/retrieval/search/VectorStoreDocumentRetriever.java:79">VectorStoreDocumentRetriever.java:79</span>；
+          请求级过滤上下文 key 是 <code>vector_store_filter_expression</code><span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/retrieval/search/VectorStoreDocumentRetriever.java:59">VectorStoreDocumentRetriever.java:59</span>。
+        </p>
+
+        <h2 id="rerank">重排：框架只给钩子，不替你选模型</h2>
+        <p>
+          向量相似度适合「粗排」，因为它只看语义距离，不考虑问题与段落的逐词匹配、时效性、权威性。精排通常在召回之后
+          用另一个模型（cross-encoder 或 LLM）重新打分。
+        </p>
+        <p>
+          Spring AI 2.0.2 <strong>没有内置 reranker</strong>，只提供 <code>DocumentPostProcessor</code> 这个钩子：
+        </p>
+        <pre data-lang="java" data-file="自定义重排">class LlmRerankPostProcessor implements DocumentPostProcessor {
+
+    private final ChatClient chatClient;
+
+    LlmRerankPostProcessor(ChatModel chatModel) {
+        this.chatClient = ChatClient.builder(chatModel).build();
+    }
+
+    @Override
+    public List&lt;Document&gt; process(Query query, List&lt;Document&gt; documents) {
+        // 让模型按「与问题的相关度」重新排序，返回前 N 条
+        // 真实项目建议用专门的 rerank 模型，别用生成模型硬排
+        return documents.stream().limit(5).toList();
+    }
+}</pre>
+        <p>
+          调用顺序是：召回 → 每个 <code>DocumentPostProcessor</code> 依次处理 → 拼进提示词。所以重排可以改顺序、
+          过滤、甚至替换文档内容。
+        </p>
+        <div class="callout tip">
+          <span class="ct">没有 rerank 也能做的三件事</span>
+          <p>
+            ① 用 metadata 过滤排除低质来源；② 把 <code>topK</code> 调大后再按业务规则截断；③ 在文档入库时就把
+            「权威度」「更新时间」写进 metadata，排序时加权。这三件事比堆一个 LLM 重排更便宜、更可控。
+          </p>
+        </div>
+
+        <h2 id="assemble">组装：一条可配置的检索流水线</h2>
+        <pre data-lang="java" data-file="RetrievalAugmentationAdvisor 全量组装">@Bean
+Advisor ragAdvisor(ChatModel chatModel, VectorStore vectorStore) {
+    var rewrite = RewriteQueryTransformer.builder()
+            .chatClientBuilder(ChatClient.builder(chatModel))
+            .build();
+
+    var multiQuery = MultiQueryExpander.builder()
+            .chatClientBuilder(ChatClient.builder(chatModel))
+            .numberOfQueries(3)
+            .build();
+
+    var retriever = VectorStoreDocumentRetriever.builder()
+            .vectorStore(vectorStore)
+            .similarityThreshold(0.6)
+            .topK(4)
+            .build();
+
+    return RetrievalAugmentationAdvisor.builder()
+            .queryTransformers(rewrite)
+            .queryExpander(multiQuery)
+            .documentRetriever(retriever)
+            .queryAugmenter(ContextualQueryAugmenter.builder()
+                    .allowEmptyContext(false)   // 默认就是 false
+                    .build())
+            .build();
+}</pre>
+        <p class="src-line">
+          <code>before</code> 的七步流程<span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/advisor/RetrievalAugmentationAdvisor.java:107">RetrievalAugmentationAdvisor.java:107</span>；
+          <code>allowEmptyContext</code> 默认 false<span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/generation/augmentation/ContextualQueryAugmenter.java:77">ContextualQueryAugmenter.java:77</span>。
+        </p>
+        <p>
+          <code>allowEmptyContext=false</code> 的含义是：<strong>没检索到任何文档时，把用户问题替换成一段
+          「超出知识库范围」的固定提示</strong>，再交给模型生成拒答。模型<strong>仍会被调用一次</strong>，
+          只是拿不到空上下文，从而降低「没资料还硬编」的概率。想连这次调用都省掉，需要在 Advisor 之前短路。
+        </p>
+
+        <h2 id="citations">把出处带回前端</h2>
+        <p>
+          检索到的文档不会凭空消失：<code>RetrievalAugmentationAdvisor</code> 把它们放进请求上下文的
+          <code>rag_document_context</code>，流式/同步响应里都能拿到。要做「答案 + 引用」，就从这里取。
+        </p>
+        <pre data-lang="java" data-file="取回检索结果">ChatClientResponse response = chatClient.prompt()
+        .user(q)
+        .call()
+        .chatClientResponse();
+
+List&lt;Document&gt; used = (List&lt;Document&gt;) response.context().get(RetrievalAugmentationAdvisor.DOCUMENT_CONTEXT);</pre>
+        <p class="src-line">
+          上下文 key<span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/advisor/RetrievalAugmentationAdvisor.java:64">RetrievalAugmentationAdvisor.java:64</span>；
+          同时会写进响应 metadata<span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/advisor/RetrievalAugmentationAdvisor.java:174">RetrievalAugmentationAdvisor.java:174</span>。
+        </p>
+
+        <h2 id="cheatsheet">速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>写法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>按 metadata 过滤</td>
+                <td><code>SearchRequest.builder().filterExpression(expr)</code></td>
+              </tr>
+              <tr>
+                <td>安全构造过滤</td>
+                <td><code>new FilterExpressionBuilder().eq(k, v).build()</code></td>
+              </tr>
+              <tr>
+                <td>多轮改写</td>
+                <td><code>RewriteQueryTransformer.builder().chatClientBuilder(...)</code></td>
+              </tr>
+              <tr>
+                <td>多路召回</td>
+                <td><code>MultiQueryExpander(numberOfQueries=3)</code></td>
+              </tr>
+              <tr>
+                <td>跨语言</td>
+                <td><code>TranslationQueryTransformer(targetLanguage)</code></td>
+              </tr>
+              <tr>
+                <td>动态过滤</td>
+                <td><code>.filterExpression(() -&gt; ...)</code></td>
+              </tr>
+              <tr>
+                <td>重排</td>
+                <td>实现 <code>DocumentPostProcessor</code></td>
+              </tr>
+              <tr>
+                <td>取引用</td>
+                <td><code>context().get(RetrievalAugmentationAdvisor.DOCUMENT_CONTEXT)</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">多轮对话里检索结果越来越差</span>
+          <p>
+            <strong>因为</strong>拿「那它呢」这类不完整的问题去检索。<strong>改成</strong>加
+            <code>CompressionQueryTransformer</code> 或 <code>RewriteQueryTransformer</code>，并接受多一次模型调用。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">A 租户搜到了 B 租户的文档</span>
+          <p>
+            <strong>因为</strong>只在提示词里说「只回答本公司内容」，没有在检索层过滤。<strong>改成</strong>用
+            <code>filterExpression</code> 在向量库层强制隔离，提示词只作为第二道防线。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">开了多查询后偶尔重复引用同一段</span>
+          <p>
+            <strong>因为</strong>合并按 id 去重，但如果你在入库时每次生成新 id，同一段内容会被当成不同文档。
+            <strong>改成</strong>用内容哈希或稳定的业务主键作为 <code>Document</code> id。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">延迟从 1 秒涨到 5 秒</span>
+          <p>
+            <strong>因为</strong>改写 + 多查询意味着 1 次改写调用 + 3 路检索 + 1 次回答。<strong>改成</strong>
+            按场景裁剪链路，给每一步设超时，并把改写结果缓存（相同问题短时间内复用）。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>为什么「让模型只回答本公司内容」不能替代 metadata 过滤？</li>
+          <li><code>MultiQueryExpander</code> 默认生成几条查询？合并时按什么去重？</li>
+          <li><code>allowEmptyContext=false</code> 在检索为空时改变了什么？模型还会被调用吗？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>给文档加 <code>tenant</code> metadata，用 <code>FilterExpressionBuilder</code> 做租户隔离，验证跨租户查不到。</li>
+          <li>连续问两轮：「退货政策是什么？」→「那运费呢？」，对比加不加改写时第二次的召回结果。</li>
+          <li>把 <code>numberOfQueries</code> 从 3 改成 5，记录召回条数、延迟与最终答案质量的变化。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          检索这条线到此收口。下一章「11 MCP 客户端」会把工具从「本地方法」扩展到「外部进程」，并讲清工具来源、
+          生命周期与安全边界的变化。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

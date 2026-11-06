@@ -1,0 +1,12 @@
+# IDE
+.idea/
+*.iml
+
+# 上游源码副本：本地核对 file:line 出处用，86 MB，不入库
+# 需要时按 README 的说明重新拉取
+spring-ai-2.0.2/
+
+# 临时脚本与截图（正式脚本不带下划线前缀）
+tools/_*
+*.tmp
+*.log

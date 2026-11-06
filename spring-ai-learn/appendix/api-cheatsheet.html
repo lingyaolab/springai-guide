@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Spring AI 2.0.2 API 速查：ChatClient、ChatModel、ChatMemory、VectorStore、ToolCallback、Advisor、EmbeddingModel 的常用方法与默认值，附源码行号。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="C API 速查表 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="常用接口签名、默认值与源码出处。" />
+    <title>C API 速查表 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="api-cheatsheet" data-root="..">
+    <main>
+      <article class="article">
+        <h1>附录 C · API 速查表</h1>
+        <p class="lede">
+          只列高频方法与关键默认值。签名以 2.0.2 为准，点胶囊可以跳到对应源码行。
+        </p>
+
+        <h2 id="chatclient">ChatClient</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>方法</th>
+                <th>说明</th>
+                <th>出处</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>static Builder builder(ChatModel)</code></td>
+                <td>手动构建入口</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:80">ChatClient.java:80</span></td>
+              </tr>
+              <tr>
+                <td><code>static ChatClient create(ChatModel)</code></td>
+                <td>快捷创建（不经过 Boot 装配）</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:63">ChatClient.java:63</span></td>
+              </tr>
+              <tr>
+                <td><code>ChatClientRequestSpec prompt()</code></td>
+                <td>开始一次请求</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:128">ChatClient.java:128</span></td>
+              </tr>
+              <tr>
+                <td><code>prompt(String content)</code> / <code>prompt(Prompt)</code></td>
+                <td>直接给用户文本 / 完整 Prompt</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:130">ChatClient.java:130</span></td>
+              </tr>
+              <tr>
+                <td><code>CallResponseSpec call()</code></td>
+                <td>同步执行</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:490">ChatClient.java:490</span></td>
+              </tr>
+              <tr>
+                <td><code>StreamResponseSpec stream()</code></td>
+                <td>流式执行</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:492">ChatClient.java:492</span></td>
+              </tr>
+              <tr>
+                <td><code>@Nullable String content()</code></td>
+                <td>第一段文本，可能为 null</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:299">ChatClient.java:299</span></td>
+              </tr>
+              <tr>
+                <td><code>@Nullable ChatResponse chatResponse()</code></td>
+                <td>带元数据的响应</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:297">ChatClient.java:297</span></td>
+              </tr>
+              <tr>
+                <td><code>&lt;T&gt; @Nullable T entity(Class&lt;T&gt;)</code></td>
+                <td>结构化输出</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:293">ChatClient.java:293</span></td>
+              </tr>
+              <tr>
+                <td><code>Flux&lt;String&gt; content()</code>（流式）</td>
+                <td>文本增量</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:382">ChatClient.java:382</span></td>
+              </tr>
+              <tr>
+                <td><code>Builder defaultAdvisors(...)</code></td>
+                <td>全局 Advisor</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:501">ChatClient.java:501</span></td>
+              </tr>
+              <tr>
+                <td><code>Builder defaultOptions(ChatOptions.Builder)</code></td>
+                <td>默认参数（2.0 只收 Builder）</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:507">ChatClient.java:507</span></td>
+              </tr>
+              <tr>
+                <td><code>Builder defaultSystem(...)</code></td>
+                <td>默认系统提示</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:517">ChatClient.java:517</span></td>
+              </tr>
+              <tr>
+                <td><code>Builder defaultTools(Object...)</code></td>
+                <td>默认工具</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:564">ChatClient.java:564</span></td>
+              </tr>
+              <tr>
+                <td><code>ChatClientRequestSpec tools(Object...)</code></td>
+                <td>本次请求追加工具</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/DefaultChatClient.java:1028">DefaultChatClient.java:1028</span></td>
+              </tr>
+              <tr>
+                <td><code>toolContext(Map)</code></td>
+                <td>传业务上下文给工具</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:470">ChatClient.java:470</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="chatmodel">ChatModel / 消息</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>类型 / 方法</th>
+                <th>说明</th>
+                <th>出处</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>interface ChatModel</code></td>
+                <td>对话模型接口</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/model/ChatModel.java:30">ChatModel.java:30</span></td>
+              </tr>
+              <tr>
+                <td><code>ChatResponse call(Prompt)</code></td>
+                <td>唯一必须实现的方法</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/model/ChatModel.java:45">ChatModel.java:45</span></td>
+              </tr>
+              <tr>
+                <td><code>Flux&lt;ChatResponse&gt; stream(Prompt)</code></td>
+                <td>默认抛 UnsupportedOperationException</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/model/ChatModel.java:64">ChatModel.java:64</span></td>
+              </tr>
+              <tr>
+                <td><code>ChatOptions getOptions()</code></td>
+                <td>2.0 新增，取代 getDefaultOptions</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/model/ChatModel.java:52">ChatModel.java:52</span></td>
+              </tr>
+              <tr>
+                <td><code>new Generation(AssistantMessage)</code></td>
+                <td>构造一条生成结果</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/model/Generation.java:36">Generation.java:36</span></td>
+              </tr>
+              <tr>
+                <td><code>Usage</code></td>
+                <td>prompt / completion / total tokens</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/metadata/Usage.java:29">Usage.java:29</span></td>
+              </tr>
+              <tr>
+                <td><code>ChatResponseMetadata.getUsage()</code></td>
+                <td>从响应取用量</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/metadata/ChatResponseMetadata.java:89">ChatResponseMetadata.java:89</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="memory">ChatMemory</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>方法 / 常量</th>
+                <th>说明</th>
+                <th>出处</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>String CONVERSATION_ID</code></td>
+                <td>上下文 key，2.0 起必填</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/ChatMemory.java:36">ChatMemory.java:36</span></td>
+              </tr>
+              <tr>
+                <td><code>void add(String, List&lt;Message&gt;)</code></td>
+                <td>写入消息</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/ChatMemory.java:50">ChatMemory.java:50</span></td>
+              </tr>
+              <tr>
+                <td><code>List&lt;Message&gt; get(String)</code></td>
+                <td>读历史</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/ChatMemory.java:55">ChatMemory.java:55</span></td>
+              </tr>
+              <tr>
+                <td><code>void clear(String)</code></td>
+                <td>清空会话</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/ChatMemory.java:60">ChatMemory.java:60</span></td>
+              </tr>
+              <tr>
+                <td><code>MessageWindowChatMemory.builder()</code></td>
+                <td>默认窗口 20 条</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/MessageWindowChatMemory.java:132">MessageWindowChatMemory.java:132</span></td>
+              </tr>
+              <tr>
+                <td><code>MessageChatMemoryAdvisor.builder(memory)</code></td>
+                <td>挂到 ChatClient</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/MessageChatMemoryAdvisor.java:165">MessageChatMemoryAdvisor.java:165</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="vector">VectorStore / 检索</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>方法 / 默认值</th>
+                <th>说明</th>
+                <th>出处</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>VectorStore.add(List&lt;Document&gt;)</code></td>
+                <td>写入并计算 embedding</td>
+                <td><span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/VectorStore.java:51">VectorStore.java:51</span></td>
+              </tr>
+              <tr>
+                <td><code>similaritySearch(SearchRequest)</code></td>
+                <td>相似度检索</td>
+                <td><span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/VectorStoreRetriever.java:45">VectorStoreRetriever.java:45</span></td>
+              </tr>
+              <tr>
+                <td><code>topK</code> 默认 4</td>
+                <td>返回条数</td>
+                <td><span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/SearchRequest.java:49">SearchRequest.java:49</span></td>
+              </tr>
+              <tr>
+                <td><code>similarityThreshold</code> 默认 0.0</td>
+                <td>全收</td>
+                <td><span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/SearchRequest.java:44">SearchRequest.java:44</span></td>
+              </tr>
+              <tr>
+                <td><code>SimpleVectorStore.builder(embeddingModel)</code></td>
+                <td>内存实现</td>
+                <td><span class="src" data-src="spring-ai-vector-store/src/main/java/org/springframework/ai/vectorstore/SimpleVectorStore.java:110">SimpleVectorStore.java:110</span></td>
+              </tr>
+              <tr>
+                <td><code>EmbeddingModel.embed(String)</code></td>
+                <td>单条向量化</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/embedding/EmbeddingModel.java:49">EmbeddingModel.java:49</span></td>
+              </tr>
+              <tr>
+                <td><code>EmbeddingModel.dimensions()</code></td>
+                <td>默认真调一次远程接口</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/embedding/EmbeddingModel.java:137">EmbeddingModel.java:137</span></td>
+              </tr>
+              <tr>
+                <td><code>QuestionAnswerAdvisor.builder(vectorStore)</code></td>
+                <td>RAG 顾问</td>
+                <td><span class="src" data-src="advisors/spring-ai-vector-store-advisor/src/main/java/org/springframework/ai/chat/client/advisor/vectorstore/QuestionAnswerAdvisor.java:99">QuestionAnswerAdvisor.java:99</span></td>
+              </tr>
+              <tr>
+                <td><code>RetrievalAugmentationAdvisor.builder()</code></td>
+                <td>可组装的 RAG 流水线</td>
+                <td><span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/advisor/RetrievalAugmentationAdvisor.java:102">RetrievalAugmentationAdvisor.java:102</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="tools">工具与 Advisor</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>类型 / 方法</th>
+                <th>说明</th>
+                <th>出处</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>@Tool(name, description, returnDirect)</code></td>
+                <td>声明工具</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/annotation/Tool.java:54">Tool.java:54</span></td>
+              </tr>
+              <tr>
+                <td><code>ToolCallback.call(String json, ToolContext)</code></td>
+                <td>直接执行工具</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/ToolCallback.java:59">ToolCallback.java:59</span></td>
+              </tr>
+              <tr>
+                <td><code>ToolDefinitions.from(Method)</code></td>
+                <td>由方法生成 schema</td>
+                <td><span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/support/ToolDefinitions.java:58">ToolDefinitions.java:58</span></td>
+              </tr>
+              <tr>
+                <td><code>ToolCallingAdvisor.DEFAULT_ORDER</code></td>
+                <td><code>HIGHEST + 300</code></td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ToolCallingAdvisor.java:75">ToolCallingAdvisor.java:75</span></td>
+              </tr>
+              <tr>
+                <td><code>Advisor.DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER</code></td>
+                <td><code>HIGHEST + 200</code></td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/api/Advisor.java:39">Advisor.java:39</span></td>
+              </tr>
+              <tr>
+                <td><code>BaseAdvisor.before / after</code></td>
+                <td>自定义 Advisor 的两个钩子</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/api/BaseAdvisor.java:84-89">BaseAdvisor.java:84-89</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="evaluation">评测（Evaluator）</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>类型 / 方法</th>
+                <th>说明</th>
+                <th>出处</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>Evaluator.evaluate(EvaluationRequest)</code></td>
+                <td>函数式评测接口，返回 pass / score / feedback</td>
+                <td><span class="src" data-src="spring-ai-commons/src/main/java/org/springframework/ai/evaluation/Evaluator.java:26">Evaluator.java:26</span></td>
+              </tr>
+              <tr>
+                <td><code>new EvaluationRequest(userText, docs, responseContent)</code></td>
+                <td>问题 + 上下文 + 回答；注意 <code>dataList</code> 是 <code>List&lt;Document&gt;</code></td>
+                <td><span class="src" data-src="spring-ai-commons/src/main/java/org/springframework/ai/evaluation/EvaluationRequest.java:52">EvaluationRequest.java:52</span></td>
+              </tr>
+              <tr>
+                <td><code>EvaluationResponse.isPass()</code></td>
+                <td>是否通过；score / feedback / metadata</td>
+                <td><span class="src" data-src="spring-ai-commons/src/main/java/org/springframework/ai/evaluation/EvaluationResponse.java:48">EvaluationResponse.java:48</span></td>
+              </tr>
+              <tr>
+                <td><code>new RelevancyEvaluator(ChatClient.Builder)</code></td>
+                <td>判断回答是否与上下文一致；只认 <code>yes</code></td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/evaluation/RelevancyEvaluator.java:61">RelevancyEvaluator.java:61</span></td>
+              </tr>
+              <tr>
+                <td><code>FactCheckingEvaluator.builder(ChatClient.Builder)</code></td>
+                <td>判断回答中的 claim 是否被文档支持</td>
+                <td><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/evaluation/FactCheckingEvaluator.java:147">FactCheckingEvaluator.java:147</span></td>
+              </tr>
+              <tr>
+                <td><code>RetrievalAugmentationAdvisor.DOCUMENT_CONTEXT</code></td>
+                <td>从响应 metadata 取回检索到的文档，作为评测上下文</td>
+                <td><span class="src" data-src="spring-ai-rag/src/main/java/org/springframework/ai/rag/advisor/RetrievalAugmentationAdvisor.java:64">RetrievalAugmentationAdvisor.java:64</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="defaults">默认值速记</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>项</th>
+                <th>默认值</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>DeepSeek base-url</td>
+                <td><code>https://api.deepseek.com</code></td>
+              </tr>
+              <tr>
+                <td>DeepSeek 默认模型</td>
+                <td><code>deepseek-v4-flash</code></td>
+              </tr>
+              <tr>
+                <td>记忆窗口</td>
+                <td>20 条</td>
+              </tr>
+              <tr>
+                <td>检索 topK / 阈值</td>
+                <td>4 / 0.0</td>
+              </tr>
+              <tr>
+                <td>工具调用上限</td>
+                <td>单工具 40 次、总计 150 次</td>
+              </tr>
+              <tr>
+                <td>重试</td>
+                <td>10 次重试（加首次共 11 次）、初始 2s、×5、上限 3min</td>
+              </tr>
+              <tr>
+                <td>结构化输出校验重试</td>
+                <td>3 次（共 4 次请求）</td>
+              </tr>
+              <tr>
+                <td>MCP 客户端超时</td>
+                <td>20s</td>
+              </tr>
+              <tr>
+                <td>MCP 服务端协议</td>
+                <td>STREAMABLE，端点 <code>/mcp</code></td>
+              </tr>
+              <tr>
+                <td>pgvector 索引 / 度量</td>
+                <td>HNSW / COSINE</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

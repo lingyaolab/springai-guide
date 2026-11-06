@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 ChatClient 完整链路：三种建法、prompt 规格、call/entity/stream 四种取结果、运行时参数、ChatMemory 与 Advisor，默认 DeepSeek。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="02 ChatClient：一次对话的完整链路 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="三种建法、prompt 规格、call/entity/stream 四种取结果、运行时参数、ChatMemory 与 Advisor。" />
+    <title>02 ChatClient：一次对话的完整链路 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="02-chatclient" data-root="..">
+    <main>
+      <article class="article">
+        <h1>02 · ChatClient</h1>
+        <p class="lede">
+          <code>ChatClient</code> 是 Spring AI 对外的<strong>唯一主入口</strong>：你写的业务代码只跟它打交道，
+          模型厂商、HTTP 客户端、 Advisor、工具循环都在它背后。这一章把「一次对话」拆成请求规格、结果获取、流式、
+          运行时参数、多轮记忆五块，最后拼成一条完整调用链。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用三种方式拿到 <code>ChatClient</code>，并说清什么时候该用自动装配的 <code>Builder</code></li>
+          <li>写出带 system / user / 占位符的请求，并用 <code>content</code>、<code>chatResponse</code>、<code>entity</code> 三种方式取结果</li>
+          <li>把同一个对话改成流式返回，并知道在 MVC 与 WebFlux 里分别该怎么写</li>
+          <li>用 <code>ChatMemory</code> + <code>MessageChatMemoryAdvisor</code> 让第二轮对话记得第一轮</li>
+        </ul>
+
+        <h2 id="why">先说为什么：ChatModel 是发动机，ChatClient 是方向盘</h2>
+        <p>
+          <code>ChatModel</code> 只承诺一件事：给一个 <code>Prompt</code>，返回一个 <code>ChatResponse</code>。
+          它不负责模板、记忆、日志、工具循环，也不负责把结果转成你的 record。这些「横切关注点」全部在
+          <code>ChatClient</code> 这一层，靠 <strong>Advisor 链</strong>串起来。
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">你的代码：chatClient.prompt()...</span>
+            <div class="ld">只描述「这次要什么」，不关心厂商、不关心 HTTP。</div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">ChatClient + Advisor 链</span>
+            <div class="ld">
+              模板渲染、记忆读写、日志、安全过滤、检索增强、工具调用循环都挂在这里。2.0 起工具循环本身也是一个
+              Advisor。<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ToolCallingAdvisor.java:65">ToolCallingAdvisor.java:65</span>
+            </div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">ChatModel（DeepSeekChatModel）</span>
+            <div class="ld">把 <code>Prompt</code> 翻成厂商请求，把响应翻回 <code>ChatResponse</code>。</div>
+          </div>
+          <div class="layer">
+            <span class="lt">DeepSeekApi / RestClient / WebClient</span>
+            <div class="ld">同步走 RestClient，流式走 WebClient。换模型只换这一层。</div>
+          </div>
+        </div>
+        <div class="callout tip">
+          <span class="ct">为什么本站后面只讲 ChatClient</span>
+          <p>
+            因为 <code>ChatClient</code> 只依赖 <code>ChatModel</code> 接口。今天用 DeepSeek，明天换 Ollama、OpenAI、
+            通义，业务代码一行不用改。反过来，如果你直接调 <code>DeepSeekChatModel</code> 的厂商方法，就把自己焊死在
+            一个厂商上了。
+          </p>
+        </div>
+
+        <h2 id="minimal">最小可跑：三行拿到第一个回答</h2>
+        <p>沿用 01 章的工程，只改 <code>run()</code> 方法：</p>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/DemoApplication.java">@Override
+public void run(String... args) {
+    String answer = this.chatClient.prompt()
+            .user("用一句话解释什么是向量数据库")
+            .call()
+            .content();
+    System.out.println(answer);
+}</pre>
+        <p>这三行分别对应：</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>代码</th>
+                <th>返回值</th>
+                <th>你在这里决定什么</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>prompt()</code></td>
+                <td><code>ChatClientRequestSpec</code></td>
+                <td>这次请求长什么样：系统提示、用户输入、参数、 Advisor</td>
+              </tr>
+              <tr>
+                <td><code>call()</code></td>
+                <td><code>CallResponseSpec</code></td>
+                <td>同步执行，并选择要哪种结果形态</td>
+              </tr>
+              <tr>
+                <td><code>content()</code></td>
+                <td><code>String</code></td>
+                <td>只要第一段文本，丢掉 token 用量等元数据</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          入口方法在 <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:128">ChatClient.java:128</span>，
+          <code>call()</code> 与 <code>stream()</code> 在 <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:490">ChatClient.java:490</span>，
+          <code>content()</code> 在 <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:299">ChatClient.java:299</span>。
+        </p>
+
+        <h2 id="line-by-line">逐行解读：容易懵的地方</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>写法</th>
+                <th>含义</th>
+                <th>常见误解</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>ChatClient.Builder</code> 注入</td>
+                <td>自动装配给的 prototype Bean，每次注入都是新副本</td>
+                <td>以为它是单例，把它 <code>build()</code> 后当全局变量到处改配置</td>
+              </tr>
+              <tr>
+                <td><code>ChatClient.create(chatModel)</code></td>
+                <td>不经过 Spring 装配，直接包一个 ChatModel</td>
+                <td>在 Boot 工程里用它，会绕过所有自动配置的 Advisor</td>
+              </tr>
+              <tr>
+                <td><code>prompt()</code> vs <code>prompt("...")</code></td>
+                <td>前者自己拼 system/user，后者等价于 <code>prompt().user(text)</code></td>
+                <td>以为 <code>prompt("...")</code> 会覆盖默认 system</td>
+              </tr>
+              <tr>
+                <td><code>content()</code> 可能返回 <code>null</code></td>
+                <td>方法签名是 <code>@Nullable String</code></td>
+                <td>直接 <code>.length()</code> 触发 NPE</td>
+              </tr>
+              <tr>
+                <td><code>stream().content()</code></td>
+                <td>返回 <code>Flux&lt;String&gt;</code>，冷流，<strong>不订阅就不发请求</strong></td>
+                <td>接住 Flux 却忘了返回给框架，控制台什么都不打印</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="spec">请求规格：system / user / param 的四种写法</h2>
+        <p>同一个请求有四种写法，按「变化频率」从高到低选：</p>
+        <pre data-lang="java" data-file="四种 prompt 写法">// ① 最简单：只有用户输入
+chatClient.prompt().user("你好").call().content();
+
+// ② 字符串直给，等价于 ①
+chatClient.prompt("你好").call().content();
+
+// ③ system + user：角色约束写在 system 里
+chatClient.prompt()
+        .system("你是一个只回答 Java 问题的助教，回答不超过三句话。")
+        .user("什么是虚拟线程？")
+        .call()
+        .content();
+
+// ④ 模板 + 参数：同一段提示反复用时，把变量抽出来
+chatClient.prompt()
+        .system(s -&gt; s.text("你是一个{role}，用{style}回答。")
+                    .param("role", "数据库专家")
+                    .param("style", "不超过 100 字"))
+        .user(u -&gt; u.text("解释一下 {topic}")
+                    .param("topic", "MVCC"))
+        .call()
+        .content();</pre>
+        <p>
+          模板渲染由 <code>TemplateRenderer</code> 负责，默认用 <code>{}</code> 占位符；需要换成
+          <code>&lt;...&gt;</code> 时，在 Builder 上设置 <code>defaultTemplateRenderer(...)</code>
+          <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:525">ChatClient.java:525</span>。
+          注意：如果 prompt 里出现 JSON 的 <code>{</code>，要么转义，要么换分隔符，否则会被当成占位符。
+        </p>
+        <div class="callout">
+          <span class="ct">默认值放在 Builder 上，一次性设置</span>
+          <p>
+            <code>ChatClient.Builder</code> 提供 <code>defaultSystem()</code>、<code>defaultUser()</code>、
+            <code>defaultAdvisors()</code>、<code>defaultOptions()</code>、<code>defaultTools()</code>。
+            它们的语义是「每次 <code>prompt()</code> 都先带上这些」，之后可以按次覆盖。
+            <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:501">ChatClient.java:501</span>
+          </p>
+        </div>
+
+        <h2 id="responses">四种取结果的方式</h2>
+        <div class="compare">
+          <div class="col pick">
+            <h4>只要文本</h4>
+            <pre data-lang="java">String s = client.prompt()
+    .user(q)
+    .call()
+    .content();</pre>
+            <p>最常用。拿不到文本时返回 <code>null</code>。</p>
+          </div>
+          <div class="col">
+            <h4>要元数据</h4>
+            <pre data-lang="java">ChatResponse r = client.prompt()
+    .user(q)
+    .call()
+    .chatResponse();</pre>
+            <p>能拿到 token 用量、finish reason、模型名。</p>
+          </div>
+        </div>
+        <pre data-lang="java" data-file="结构化输出">record Movie(String title, int year, List&lt;String&gt; actors) {}
+
+Movie movie = chatClient.prompt()
+        .user("随便推荐一部 2000 年后的科幻电影")
+        .call()
+        .entity(Movie.class);</pre>
+        <p>
+          <code>entity()</code> 默认走「提示词约束 + JSON 解析」。模型返回的 JSON 不合法时会抛异常；
+          想要更稳，可以加两个开关：<code>validateSchema()</code> 校验失败自动带错误重试，
+          <code>useProviderStructuredOutput()</code> 试图把 schema 直接交给厂商。但 2.0.2 的
+          <code>DeepSeekChatOptions</code> 没有实现 <code>StructuredOutputChatOptions</code>，所以在 DeepSeek 上打开它
+          会<strong>静默退回提示词方案</strong>——不报错，也没效果（第 03 章详述）。
+        </p>
+        <pre data-lang="java" data-file="带可靠性开关">Movie movie = chatClient.prompt()
+        .user("随便推荐一部 2000 年后的科幻电影")
+        .call()
+        .entity(Movie.class, spec -&gt; spec
+                .validateSchema()
+                .useProviderStructuredOutput());</pre>
+        <p class="src-line">
+          <code>entity</code> 的 4 个重载在 <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:293">ChatClient.java:293</span>；
+          两个开关的语义在 <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:225">ChatClient.java:225</span>。
+        </p>
+
+        <h2 id="stream">流式：Flux 与 SSE</h2>
+        <p>把 <code>call()</code> 换成 <code>stream()</code>，就能边生成边处理：</p>
+        <pre data-lang="java" data-file="流式读取">Flux&lt;String&gt; flux = chatClient.prompt()
+        .user("写一段 200 字的产品介绍")
+        .stream()
+        .content();
+
+// 逐块打印；blockLast 只是为了在命令行里演示
+flux.doOnNext(System.out::print).blockLast();</pre>
+        <p>
+          <code>stream()</code> 返回的是<strong>冷流</strong>：只有被订阅时才真正发请求。在 Web 应用里，通常不要自己
+          <code>subscribe</code>，而是把 <code>Flux</code> 交给框架。
+        </p>
+        <div class="compare">
+          <div class="col">
+            <h4>WebFlux：直接返回 Flux</h4>
+            <pre data-lang="java">@GetMapping(
+  value = "/chat/stream",
+  produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux&lt;String&gt; stream(@RequestParam String q) {
+    return chatClient.prompt()
+        .user(q)
+        .stream()
+        .content();
+}</pre>
+          </div>
+          <div class="col">
+            <h4>MVC：用 SseEmitter 桥接</h4>
+            <pre data-lang="java">@GetMapping("/chat/stream")
+public SseEmitter stream(@RequestParam String q) {
+    SseEmitter emitter = new SseEmitter(0L);
+    Disposable d = chatClient.prompt().user(q).stream().content()
+        .subscribe(
+            chunk -&gt; {
+                try { emitter.send(chunk); }
+                catch (IOException e) { emitter.completeWithError(e); }
+            },
+            emitter::completeWithError,
+            emitter::complete);
+    emitter.onCompletion(d::dispose);
+    emitter.onTimeout(d::dispose);
+    return emitter;
+}</pre>
+          </div>
+        </div>
+        <div class="callout warn">
+          <span class="ct">流式的三个坑</span>
+          <p>
+            ① MVC 也能返回 <code>Flux</code>，但依赖 Reactor 与流式 <code>produces</code>，由 MVC 的
+            <code>ReactiveTypeHandler</code> 适配；同时引 web 与 webflux 时 Boot 默认仍选 Servlet 栈，行为容易和预期不一致。
+            要可控就用 <code>SseEmitter</code>，或只引 webflux 并显式设 <code>web-application-type=reactive</code>；
+            ② 自己 <code>subscribe()</code> 后请求线程就结束了，必须把流交回容器或显式桥接到 <code>SseEmitter</code>；
+            ③ 代理（Nginx）默认缓冲响应，需要在配置里关掉缓冲，否则用户仍然要等全部生成完。
+          </p>
+        </div>
+        <p class="src-line">
+          <code>StreamResponseSpec.content()</code> 的签名是 <code>Flux&lt;String&gt;</code><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:382">ChatClient.java:382</span>；
+          流式底层走 <code>WebClient</code><span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/api/DeepSeekApi.java:177">DeepSeekApi.java:177</span>。
+        </p>
+
+        <h2 id="options">运行时参数与 DeepSeek 专属开关</h2>
+        <p>
+          全局参数写在 <code>application.yml</code>（01 章）；<strong>单次请求</strong>要覆盖时用
+          <code>.options(...)</code>。2.0 起 <code>ChatOptions</code> 是不可变对象，方法只接受 Builder：
+        </p>
+        <pre data-lang="java" data-file="运行时覆盖参数">String answer = chatClient.prompt()
+        .user("把这段合同条款压缩成 50 字")
+        .options(DeepSeekChatOptions.builder()
+                .temperature(0.1)
+                .maxTokens(200)
+                .build())
+        .call()
+        .content();</pre>
+        <p>
+          想开启思考模式（reasoning）时，DeepSeek 的属性里还有 <code>thinking</code> 与
+          <code>reasoningEffort</code> 两个开关；配置前缀同样是 <code>spring.ai.deepseek.chat</code>。
+          换模型时只需要把 <code>DeepSeekChatOptions</code> 换成对应厂商的 Options，<code>ChatClient</code> 代码不变。
+        </p>
+        <p class="src-line">
+          Options 的 Builder 入口在 <span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/DeepSeekChatOptions.java:180">DeepSeekChatOptions.java:180</span>；
+          <code>.options()</code> 只收 <code>ChatOptions.Builder</code> 是 2.0 的编译期约束<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:1478">upgrade-notes.adoc:1478</span>。
+        </p>
+
+        <h2 id="memory">多轮记忆：ChatMemory + Advisor</h2>
+        <p>
+          01 章的 starter 已经顺带引入了 chat-memory 自动装配，所以容器里<strong>已经有一个</strong>
+          <code>ChatMemory</code>（内存版，窗口 20 条）：
+        </p>
+        <pre data-lang="java" data-file="把记忆 Advisor 挂到客户端">@Configuration
+class ChatConfig {
+
+    @Bean
+    ChatClient chatClient(ChatClient.Builder builder, ChatMemory chatMemory) {
+        return builder
+                .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
+                .build();
+    }
+}</pre>
+        <pre data-lang="java" data-file="每次调用指定会话">@Service
+class ChatService {
+
+    private final ChatClient chatClient;
+    ChatService(ChatClient chatClient) { this.chatClient = chatClient; }
+
+    String chat(String userId, String question) {
+        return this.chatClient.prompt()
+                .user(question)
+                .advisors(a -&gt; a.param(ChatMemory.CONVERSATION_ID, userId))
+                .call()
+                .content();
+    }
+}</pre>
+        <p>
+          关键点：<strong>会话 ID 必须每次调用时传</strong>。2.0 起内置记忆 Advisor 不再接受构造期默认会话 ID，
+          缺了会直接抛 <code>IllegalArgumentException</code>；<code>ChatMemory.DEFAULT_CONVERSATION_ID</code> 常量也已删除。
+        </p>
+        <p class="src-line">
+          <code>CONVERSATION_ID</code> 的键名是 <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/ChatMemory.java:36">ChatMemory.java:36</span>；
+          内存实现默认窗口 20 条<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/MessageWindowChatMemory.java:45">MessageWindowChatMemory.java:45</span>；
+          会话 ID 必填的变更说明<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:1365">upgrade-notes.adoc:1365</span>。
+        </p>
+        <div class="callout tip">
+          <span class="ct">内存版只适合单机演示</span>
+          <p>
+            多副本部署时每个实例的对话历史互不可见。生产环境换 JDBC / Redis / MongoDB 仓库，第 05 章会讲三种存法的
+            表结构与配置差异。
+          </p>
+        </div>
+
+        <h2 id="end-to-end">端到端：一次 call() 到底走了哪些 Advisor</h2>
+        <div class="steps">
+          <li>
+            <span class="sh">① 渲染 Prompt</span>
+            <div>把 system/user 模板与参数合成 <code>Prompt</code>，带上本次的 <code>ChatOptions</code>。</div>
+          </li>
+          <li>
+            <span class="sh">② 进入 Advisor 链（order 越小越靠外）</span>
+            <div>
+              记忆 Advisor（<code>MIN+200</code>）最外层，先读历史；工具 Advisor（<code>MIN+300</code>）紧接着进入循环；
+              循环内部每一轮还会经过日志（<code>0</code>）、RAG（<code>0</code>）等 Advisor，最后到 <code>ChatModel</code>。
+              工具 Advisor 由自动装配注册。
+              <span class="src" data-src="auto-configurations/models/chat/client/spring-ai-autoconfigure-model-chat-client/src/main/java/org/springframework/ai/model/chat/client/autoconfigure/ChatClientAutoConfiguration.java:100">ChatClientAutoConfiguration.java:100</span>
+            </div>
+          </li>
+          <li>
+            <span class="sh">③ ChatModel 转协议</span>
+            <div>
+              <code>DeepSeekChatModel</code> 把消息、选项、工具定义翻成 DeepSeek 的请求体，交给
+              <code>DeepSeekApi</code>。
+            </div>
+          </li>
+          <li>
+            <span class="sh">④ 发 HTTP</span>
+            <div>同步走 <code>RestClient</code>；流式走 <code>WebClient</code> 并逐块解析 SSE。</div>
+          </li>
+          <li>
+            <span class="sh">⑤ 回来反向穿过 Advisor</span>
+            <div>记忆 Advisor 把本轮问答写回 <code>ChatMemory</code>，日志 Advisor 记录耗时与 token，最后交给你。</div>
+          </li>
+        </div>
+
+        <h2 id="cheatsheet">API 速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>写法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>拿自动装配的客户端</td>
+                <td>注入 <code>ChatClient.Builder</code> 后 <code>build()</code></td>
+              </tr>
+              <tr>
+                <td>手动包一个模型</td>
+                <td><code>ChatClient.create(chatModel)</code></td>
+              </tr>
+              <tr>
+                <td>加系统提示</td>
+                <td><code>.system("...")</code> 或 <code>.system(s -&gt; s.text(...).param(...))</code></td>
+              </tr>
+              <tr>
+                <td>加用户输入</td>
+                <td><code>.user("...")</code> 或 <code>.user(u -&gt; u.text(...).param(...))</code></td>
+              </tr>
+              <tr>
+                <td>覆盖参数</td>
+                <td><code>.options(DeepSeekChatOptions.builder()...build())</code></td>
+              </tr>
+              <tr>
+                <td>要纯文本</td>
+                <td><code>.call().content()</code></td>
+              </tr>
+              <tr>
+                <td>要元数据</td>
+                <td><code>.call().chatResponse()</code></td>
+              </tr>
+              <tr>
+                <td>要对象</td>
+                <td><code>.call().entity(MyRecord.class)</code></td>
+              </tr>
+              <tr>
+                <td>流式</td>
+                <td><code>.stream().content()</code> → <code>Flux&lt;String&gt;</code></td>
+              </tr>
+              <tr>
+                <td>加记忆</td>
+                <td><code>.defaultAdvisors(MessageChatMemoryAdvisor.builder(memory).build())</code></td>
+              </tr>
+              <tr>
+                <td>指定会话</td>
+                <td><code>.advisors(a -&gt; a.param(ChatMemory.CONVERSATION_ID, id))</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">你会看到 <code>NullPointerException</code> 在 <code>content()</code> 之后</span>
+          <p>
+            <strong>因为</strong><code>content()</code> 的签名是 <code>@Nullable String</code>，模型没有返回文本内容时
+            就是 <code>null</code>（例如只返回了工具调用）。<strong>改成</strong>先判空，或改用
+            <code>chatResponse()</code> 看 <code>getResult().getOutput()</code> 到底有什么。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">你会看到 <code>IllegalArgumentException</code>：缺少 conversation id</span>
+          <p>
+            <strong>因为</strong>2.0 起记忆 Advisor 强制要求每次调用提供 <code>ChatMemory.CONVERSATION_ID</code>。
+            <strong>改成</strong>在 <code>.advisors(a -&gt; a.param(...))</code> 里传，不要再用已删除的
+            <code>.conversationId()</code> 构造期写法。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">你会看到结构化输出偶尔解析失败</span>
+          <p>
+            <strong>因为</strong><code>entity()</code> 默认靠提示词约束模型输出 JSON，模型可能加解释文字或漏字段。
+            <strong>改成</strong>先加 <code>validateSchema()</code> 让它自动重试；仍然不稳时，把 prompt 里的字段说明写全，
+            或改用更擅长结构化输出的模型。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">你会看到流式接口「一次性返回」</span>
+          <p>
+            <strong>因为</strong>返回值不是真正的流式通道：MVC 返回 <code>Flux</code> 会被聚合，或 Nginx 缓冲了响应。
+            <strong>改成</strong>MVC 用 <code>SseEmitter</code>，WebFlux 直接返回 <code>Flux</code>，并在反向代理关掉
+            <code>proxy_buffering</code>。
+          </p>
+        </div>
+        <div class="callout tip">
+          <span class="ct">温度不是「创造力开关」</span>
+          <p>
+            对合同抽取、分类、SQL 生成这类任务，先设 0–0.2；对文案、起名再设 0.7 以上。温度 0 也不保证完全确定性，
+            别把它当成可复现的保证。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li><code>ChatClient.create(chatModel)</code> 和注入 <code>ChatClient.Builder</code> 最大的区别是什么？</li>
+          <li>为什么 <code>stream().content()</code> 拿到的 Flux 不订阅就没有任何输出？</li>
+          <li>记忆 Advisor 已经挂在 Builder 上，为什么每次调用还要传 conversation id？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>给同一个问题加不同的 system 提示（「用一句话」/「用表格」），比较输出结构。</li>
+          <li>把 <code>content()</code> 换成 <code>chatResponse()</code>，打印 token 用量，估算一次对话的成本。</li>
+          <li>用同一个 <code>userId</code> 连问两轮「我叫什么」→「我刚才说我叫什么」，再用两个不同 <code>userId</code> 验证记忆隔离。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章「03 Prompt 模板与结构化输出」会把这一章的
+          <code>entity()</code> 拆开：模板怎么渲染、JSON 怎么校验、失败怎么重试。RAG 与工具都建立在这一章之上。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

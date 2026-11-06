@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 可观测性与测试：ChatClient/ChatModel/Embedding/VectorStore 的 Observation、gen_ai 指标与 token 用量、日志开关，以及用 StubChatModel、ToolCallback、StubEmbeddingModel 做零成本测试。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="13 可观测性与测试：别靠日志猜 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="Observation 与 gen_ai 指标、token 用量、日志开关，以及零成本测试工具/RAG。" />
+    <title>13 可观测性与测试：别靠日志猜 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="13-observability-testing" data-root="..">
+    <main>
+      <article class="article">
+        <h1>13 · 可观测性与测试</h1>
+        <p class="lede">
+          AI 应用的故障很难复现：同一个问题，模型这次答对了，下次不一定。所以<strong>观测</strong>要能回答「这次慢在哪、
+          花了多少 token」，<strong>测试</strong>要能不依赖真实模型就把工具、RAG、Advisor 的逻辑锁住。这一章两件事一起讲。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>说清一次请求会经过哪些 Observation，以及 token 用量从哪个对象取</li>
+          <li>打开/关闭 prompt 与 completion 日志，并知道为什么默认关闭</li>
+          <li>用 <code>StubChatModel</code> 和 <code>StubEmbeddingModel</code> 写出不花钱、可重复的单元测试</li>
+          <li>直接测试 <code>ToolCallback</code>，不经过模型也能验证参数与异常</li>
+        </ul>
+
+        <h2 id="why">先说为什么：AI 应用不能只靠「看输出」</h2>
+        <p>
+          传统接口的 bug 可以靠断点复现；AI 应用的输出带随机性，问题往往藏在「检索错了」「工具没调」「token 超了」
+          这些中间环节。没有观测，你只能看到最终那句话；没有可替换的测试桩，你每跑一次测试都要花钱、还要等网络。
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">Observation：一次调用发生了什么</span>
+            <div class="ld">模型、Advisor、向量库、工具各自埋点，能拼出完整链路与耗时。</div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">Metrics：趋势与成本</span>
+            <div class="ld">token 用量、调用次数、延迟分布，适合做告警与容量规划。</div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">可替换的依赖：测试的基础</span>
+            <div class="ld">只要 <code>ChatModel</code> / <code>EmbeddingModel</code> 是接口，就能用桩替换。</div>
+          </div>
+        </div>
+
+        <h2 id="observation">Observation：哪些东西被埋了点</h2>
+        <p>
+          Spring AI 基于 Micrometer Observation。引入 <code>spring-boot-starter-actuator</code> 后，只要容器里有
+          <code>ObservationRegistry</code>，以下环节都会产生 observation：
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>环节</th>
+                <th>典型名称 / 上下文</th>
+                <th>能回答的问题</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>ChatClient</td>
+                <td><code>gen_ai.client.operation</code></td>
+                <td>整次对话耗时、用了哪些 Advisor</td>
+              </tr>
+              <tr>
+                <td>Advisor</td>
+                <td>按 Advisor 分别记录</td>
+                <td>记忆、RAG、工具循环各花了多久</td>
+              </tr>
+              <tr>
+                <td>ChatModel</td>
+                <td>模型名、请求参数、token 用量、finish reason</td>
+                <td>是模型慢还是网络慢</td>
+              </tr>
+              <tr>
+                <td>EmbeddingModel</td>
+                <td>输入 token、维度</td>
+                <td>入库为什么慢、embedding 花了多少</td>
+              </tr>
+              <tr>
+                <td>VectorStore</td>
+                <td>查询向量、topK、返回条数</td>
+                <td>检索是不是空、命中几条</td>
+              </tr>
+              <tr>
+                <td>Tool Calling</td>
+                <td>工具名、参数、结果状态</td>
+                <td>模型到底调了哪个工具</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre data-lang="xml" data-file="pom.xml">    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-boot-starter-actuator&lt;/artifactId&gt;
+    &lt;/dependency&gt;</pre>
+        <p>
+          接上 OpenTelemetry / Zipkin / Prometheus 之后，这些 observation 会变成 trace 与 metric。不做任何配置时，
+          它们也会被记录到 <code>ObservationRegistry.NOOP</code>——也就是<strong>什么都不留</strong>，所以「引了 starter 却没数据」
+          是正常的，要确认 registry 真的被装配了。
+        </p>
+
+        <h2 id="metrics">指标与 token：成本从哪里看</h2>
+        <p>
+          最有用的是 <code>gen_ai.client.token.usage</code>：它按输入/输出分别计数，可以按模型维度聚合。
+          Prometheus 里名字会变成 <code>gen_ai_client_token_usage_total</code>（点号被替换）。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>指标 / 属性</th>
+                <th>含义</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>gen_ai.client.token.usage</code></td>
+                <td>输入与输出 token 数</td>
+              </tr>
+              <tr>
+                <td><code>gen_ai.usage.input_tokens</code></td>
+                <td>提示词 token</td>
+              </tr>
+              <tr>
+                <td><code>gen_ai.usage.output_tokens</code></td>
+                <td>生成 token</td>
+              </tr>
+              <tr>
+                <td><code>gen_ai.request.model</code></td>
+                <td>模型名，用来做维度切分</td>
+              </tr>
+              <tr>
+                <td><code>gen_ai.response.finish_reasons</code></td>
+                <td>停止原因（stop / length / tool_calls）</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          指标与属性清单<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/observability/index.adoc:93">observability/index.adoc:93</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">高基数标签会把监控系统拖垮</span>
+          <p>
+            不要把用户 ID、会话 ID、完整问题文本放进 metric 标签。它们适合放 trace 或日志。官方也明确区分：
+            低基数键进 metrics 与 traces，高基数键只进 traces。
+          </p>
+        </div>
+
+        <h2 id="tokens">代码里怎么拿 token 用量</h2>
+        <pre data-lang="java" data-file="从 ChatResponse 取 usage">ChatResponse response = chatClient.prompt()
+        .user("解释一下 MVCC")
+        .call()
+        .chatResponse();
+
+Usage usage = response.getMetadata().getUsage();
+System.out.println(usage.getPromptTokens() + " + "
+        + usage.getCompletionTokens() + " = " + usage.getTotalTokens());</pre>
+        <p>
+          <code>Usage</code> 是接口，<code>DefaultUsage</code> 是默认实现；<code>getTotalTokens()</code> 有默认方法，
+          两个分量缺失时按 0 计算。流式场景下，用量通常只在最后一个 chunk 或聚合后的响应里出现。
+        </p>
+        <p class="src-line">
+          <code>Usage</code> 接口<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/metadata/Usage.java:29">Usage.java:29</span>；
+          元数据入口<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/metadata/ChatResponseMetadata.java:89">ChatResponseMetadata.java:89</span>。
+        </p>
+
+        <h2 id="logging">日志：默认不打印内容，是有意为之</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>配置项</th>
+                <th>默认</th>
+                <th>作用</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>spring.ai.chat.client.observations.log-prompt</code></td>
+                <td><code>false</code></td>
+                <td>打印发送给模型的完整提示词</td>
+              </tr>
+              <tr>
+                <td><code>spring.ai.chat.client.observations.log-completion</code></td>
+                <td><code>false</code></td>
+                <td>打印模型返回的完整内容</td>
+              </tr>
+              <tr>
+                <td><code>spring.ai.chat.observations.log-prompt</code></td>
+                <td><code>false</code></td>
+                <td>ChatModel 层的提示词日志</td>
+              </tr>
+              <tr>
+                <td><code>spring.ai.chat.observations.log-completion</code></td>
+                <td><code>false</code></td>
+                <td>ChatModel 层的返回内容日志</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          默认关闭是因为提示词里经常含用户隐私、密钥、内部文档。要排障时临时打开，并确保日志脱敏、有保留期限；
+          不要在生产长期打开。
+        </p>
+        <p class="src-line">
+          日志开关与默认值<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/observability/index.adoc:47">observability/index.adoc:47</span>。
+        </p>
+
+        <h2 id="unit">单元测试：用 StubChatModel 替换真实模型</h2>
+        <p>
+          <code>ChatModel</code> 只强制实现 <code>call(Prompt)</code> 一个方法，<code>stream</code> 有默认实现（抛
+          <code>UnsupportedOperationException</code>）。所以写一个桩非常简单：
+        </p>
+        <pre data-lang="java" data-file="src/test/java/com/example/demo/StubChatModel.java">class StubChatModel implements ChatModel {
+
+    private final String reply;
+
+    StubChatModel(String reply) {
+        this.reply = reply;
+    }
+
+    @Override
+    public ChatResponse call(Prompt prompt) {
+        var generation = new Generation(new AssistantMessage(this.reply));
+        return ChatResponse.builder()
+                .generations(List.of(generation))
+                .metadata(ChatResponseMetadata.builder()
+                        .usage(new DefaultUsage(12, this.reply.length()))
+                        .build())
+                .build();
+    }
+}</pre>
+        <pre data-lang="java" data-file="src/test/java/com/example/demo/ChatServiceTest.java">@Test
+void 返回模型文本并记录用量() {
+    ChatClient chatClient = ChatClient.builder(new StubChatModel("你好，我是桩"))
+            .build();
+
+    ChatResponse response = chatClient.prompt()
+            .user("打个招呼")
+            .call()
+            .chatResponse();
+
+    assertThat(response.getResult().getOutput().getText()).isEqualTo("你好，我是桩");
+    assertThat(response.getMetadata().getUsage().getPromptTokens()).isEqualTo(12);
+}</pre>
+        <div class="callout tip">
+          <span class="ct">需要按输入返回不同结果时</span>
+          <p>
+            在桩里读取 <code>prompt.getUserMessage().getText()</code> 做分支，或者用 Mockito 的
+            <code>when(chatModel.call(any()))</code>。Spring 上下文里替换 Bean 用
+            <code>@MockitoBean</code>（Boot 4 已取代旧的 <code>@MockBean</code>）。
+          </p>
+        </div>
+
+        <h2 id="tool">工具测试：绕过模型，直接调 ToolCallback</h2>
+        <p>
+          工具的执行不依赖模型。拿到 <code>ToolCallback</code> 之后，直接传 JSON 参数即可验证参数绑定、返回值与异常：
+        </p>
+        <pre data-lang="java" data-file="src/test/java/com/example/demo/WeatherToolsTest.java">@Test
+void 工具能按城市返回结果() {
+    ToolCallback[] callbacks = MethodToolCallbackProvider.builder()
+            .toolObjects(new WeatherTools())
+            .build()
+            .getToolCallbacks();
+
+    String result = callbacks[0].call("{\"city\":\"杭州\"}");
+
+    assertThat(result).contains("杭州");
+}</pre>
+        <p>
+          这样做的好处是：参数名、必填校验、异常转换逻辑都能被覆盖，而且不需要 API Key、没有网络抖动。
+          工具的调用上限与循环属于 Advisor 层，用上一章的 <code>ToolCallingAdvisor</code> 配置做集成测试即可。
+        </p>
+        <p class="src-line">
+          从注解到 <code>ToolCallback</code> 的构建<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/method/MethodToolCallbackProvider.java:86">MethodToolCallbackProvider.java:86</span>。
+        </p>
+
+        <h2 id="rag">RAG 测试：用确定性向量验证「检索对不对」</h2>
+        <p>
+          测试 RAG 不需要真的 embedding 模型。写一个按关键词返回固定向量的桩，就能稳定验证排序与过滤：
+        </p>
+        <pre data-lang="java" data-file="src/test/java/com/example/demo/StubEmbeddingModel.java">class StubEmbeddingModel implements EmbeddingModel {
+
+    @Override
+    public EmbeddingResponse call(EmbeddingRequest request) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public float[] embed(Document document) {
+        return embed(document.getText());
+    }
+
+    @Override
+    public float[] embed(String text) {
+        // 两个维度足够演示：退款相关 / 运费相关
+        return new float[]{
+                text != null &amp;&amp; text.contains("退款") ? 1f : 0f,
+                text != null &amp;&amp; text.contains("运费") ? 1f : 0f
+        };
+    }
+
+    @Override
+    public int dimensions() {
+        return 2;
+    }
+}</pre>
+        <pre data-lang="java" data-file="检索断言">VectorStore store = SimpleVectorStore.builder(new StubEmbeddingModel()).build();
+store.add(List.of(
+        new Document("refund", "退款政策：7 天无理由"),
+        new Document("shipping", "运费规则：满 99 包邮")));
+
+List&lt;Document&gt; hits = store.similaritySearch(
+        SearchRequest.builder().query("退款怎么处理").topK(1).build());
+
+assertThat(hits).hasSize(1);
+assertThat(hits.get(0).getId()).isEqualTo("refund");</pre>
+        <div class="callout">
+          <span class="ct">这测的是什么、不测什么</span>
+          <p>
+            它验证的是<strong>你的代码</strong>：切分、过滤、topK、排序、拼接逻辑。它不验证真实 embedding 模型的语义能力——
+            那属于评测（evaluation），要用真实模型和标注集跑。
+          </p>
+        </div>
+
+        <h2 id="integration">集成测试：真实模型只在需要时跑</h2>
+        <p>
+          端到端测试仍然需要真实模型（或一个 Mock Server）。用环境变量守卫，避免 CI 没有 key 时红：
+        </p>
+        <pre data-lang="java" data-file="src/test/java/com/example/demo/DeepSeekIT.java">@SpringBootTest
+@EnabledIfEnvironmentVariable(named = "DEEPSEEK_API_KEY", matches = ".+")
+class DeepSeekIT {
+
+    @Autowired
+    ChatClient chatClient;
+
+    @Test
+    void 能拿到真实回答() {
+        String answer = chatClient.prompt().user("用一句话介绍杭州").call().content();
+        assertThat(answer).isNotBlank();
+    }
+}</pre>
+        <p>
+          数据库/向量库这类依赖，用 Testcontainers 起真实实例，比 H2 模拟更可靠；pgvector 有现成镜像，
+          测试里把 <code>initialize-schema</code> 设为 true 即可。
+        </p>
+
+        <h2 id="cheatsheet">速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>写法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>开启指标</td>
+                <td>加 <code>spring-boot-starter-actuator</code></td>
+              </tr>
+              <tr>
+                <td>看 token 用量</td>
+                <td><code>response.getMetadata().getUsage()</code></td>
+              </tr>
+              <tr>
+                <td>打印提示词</td>
+                <td><code>spring.ai.chat.client.observations.log-prompt=true</code></td>
+              </tr>
+              <tr>
+                <td>替换模型</td>
+                <td>自写 <code>StubChatModel</code> 或 <code>@MockitoBean ChatModel</code></td>
+              </tr>
+              <tr>
+                <td>测工具</td>
+                <td><code>MethodToolCallbackProvider...getToolCallbacks()[0].call(json)</code></td>
+              </tr>
+              <tr>
+                <td>测检索</td>
+                <td><code>SimpleVectorStore</code> + 自写 <code>EmbeddingModel</code></td>
+              </tr>
+              <tr>
+                <td>真实调用测试</td>
+                <td><code>@EnabledIfEnvironmentVariable</code> 守卫</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">加了 actuator 还是看不到 token 指标</span>
+          <p>
+            <strong>因为</strong>没有真正的 <code>ObservationRegistry</code>（比如手动 new 了 ChatModel），或者没接
+            Prometheus/OTel 导出。<strong>改成</strong>用自动装配的 ChatModel，并确认 registry 注入到了模型里。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">测试里 mock 了 ChatClient，结果什么逻辑都没测到</span>
+          <p>
+            <strong>因为</strong>把被测对象本身 mock 了。<strong>改成</strong>mock 最底层的 <code>ChatModel</code> /
+            <code>EmbeddingModel</code>，让 Advisor、模板、解析这些真实逻辑跑起来。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">流式测试拿不到 usage</span>
+          <p>
+            <strong>因为</strong>用量通常在最后一个 chunk 或聚合响应里。<strong>改成</strong>测试里聚合整条流，或直接
+            用同步 <code>call()</code> 验证用量逻辑。
+          </p>
+        </div>
+        <div class="callout tip">
+          <span class="ct">给桩加「可断言」的痕迹</span>
+          <p>
+            在 Stub 里记录收到的 Prompt、调用次数、工具上下文，测试时断言「模型收到的提示词里确实拼进了检索结果」。
+            这比只断言最终字符串更能定位问题。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>为什么 prompt/completion 日志默认关闭？打开后要注意什么？</li>
+          <li>测试工具时为什么可以完全不经过模型？</li>
+          <li>用 StubEmbeddingModel 测 RAG，能验证什么、不能验证什么？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把 <code>StubChatModel</code> 改造成「记录最后一次 Prompt」的版本，断言 RAG 拼接后的提示词包含文档内容。</li>
+          <li>给天气工具写三个测试：正常参数、缺参数、参数类型错误，观察异常转换结果。</li>
+          <li>用 Testcontainers 起一个 pgvector，跑一次 <code>add → search</code> 的集成测试。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章「14 生产化」把这一章的观测数据用起来：超时怎么分层、重试为什么不能无脑开、限流放在哪、
+          以及怎么按 token 估成本。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

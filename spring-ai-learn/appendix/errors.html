@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Spring AI 2.0.2 报错速查：启动失败、401/404、维度不匹配、记忆缺会话 ID、工具上下文缺失、模板变量未替换、流式不输出、MCP 连不上。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="B 报错速查：看到 X → 因为 Y → 改成 Z · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="常见报错的成因、修复方式与源码抛出点。" />
+    <title>B 报错速查：看到 X → 因为 Y → 改成 Z · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="errors" data-root="..">
+    <main>
+      <article class="article">
+        <h1>附录 B · 报错速查</h1>
+        <p class="lede">
+          按「你会看到 X → 因为 Y → 改成 Z」组织。每条尽量给出源码抛出点，方便你顺着栈去找真正的原因。
+        </p>
+
+        <h2 id="startup">启动阶段</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你会看到</th>
+                <th>因为</th>
+                <th>改成</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>DeepSeek API key must be set</code></td>
+                <td>没解析到 <code>spring.ai.deepseek.api-key</code>，启动时断言失败</td>
+                <td>检查配置、环境变量与 <code>${...}</code> 占位符；IDE 里要单独配环境变量</td>
+              </tr>
+              <tr>
+                <td><code>No qualifying bean of type 'ChatModel'</code></td>
+                <td>模型自动装配的条件不满足</td>
+                <td>确认 starter 在 classpath、<code>spring.ai.model.chat</code> 没指向别的厂商</td>
+              </tr>
+              <tr>
+                <td><code>NoSuchMethodError</code> / 编译期找不到方法</td>
+                <td>把 Spring AI 2.0 塞进了 Spring Boot 3 工程</td>
+                <td>整体升到 Boot 4，或留在 Spring AI 1.0.x</td>
+              </tr>
+              <tr>
+                <td><code>expected single matching bean but found 2</code></td>
+                <td>两个厂商的 ChatModel 同时在容器里</td>
+                <td>用 <code>spring.ai.model.chat=deepseek</code> 显式选一个</td>
+              </tr>
+              <tr>
+                <td><code>relation "vector_store" does not exist</code></td>
+                <td>向量库 <code>initialize-schema</code> 默认 false</td>
+                <td>首次设 true，或先执行迁移脚本</td>
+              </tr>
+              <tr>
+                <td><code>Actual vector dimensions is 1536, required vector dimensions is 384</code></td>
+                <td>表按兜底 1536 建，模型输出 384</td>
+                <td>显式设 <code>dimensions</code>，并开启 <code>schema-validation</code></td>
+              </tr>
+              <tr>
+                <td>MCP 客户端启动卡住 / 握手失败</td>
+                <td>子进程没起来，或日志写进 stdout 污染协议</td>
+                <td>终端先手动跑同一条命令；server 日志走 stderr</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          缺 key 的断言<span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-deepseek/src/main/java/org/springframework/ai/model/deepseek/autoconfigure/DeepSeekChatAutoConfiguration.java:94">DeepSeekChatAutoConfiguration.java:94</span>；
+          维度校验<span class="src" data-src="vector-stores/spring-ai-pgvector-store/src/main/java/org/springframework/ai/vectorstore/pgvector/PgVectorSchemaValidator.java:160">PgVectorSchemaValidator.java:160</span>。
+        </p>
+
+        <h2 id="request">请求阶段</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你会看到</th>
+                <th>因为</th>
+                <th>改成</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>401 Unauthorized</code></td>
+                <td>key 无效、欠费，或 base-url 指向了另一个网关</td>
+                <td>先用 curl 直连厂商验证 key，再回来查代码</td>
+              </tr>
+              <tr>
+                <td><code>404 Not Found</code></td>
+                <td>base-url 多了或少了一段路径</td>
+                <td>用默认 <code>https://api.deepseek.com</code>，别手拼 <code>/chat/completions</code></td>
+              </tr>
+              <tr>
+                <td><code>conversationId cannot be null</code></td>
+                <td>记忆 Advisor 取不到会话 ID（2.0 起必填）</td>
+                <td>每次调用传 <code>ChatMemory.CONVERSATION_ID</code></td>
+              </tr>
+              <tr>
+                <td><code>ToolContext is required by the method as an argument</code></td>
+                <td>工具方法声明了 <code>ToolContext</code>，调用时没传</td>
+                <td>用 <code>.toolContext(Map)</code> 传入，哪怕只有默认值</td>
+              </tr>
+              <tr>
+                <td><code>IllegalStateException</code>：两个工具同名</td>
+                <td>本地 <code>@Tool</code> 与 MCP 工具重名</td>
+                <td>改名、给 MCP 工具加前缀，或用 <code>McpToolFilter</code> 去掉一个</td>
+              </tr>
+              <tr>
+                <td><code>ToolCallLimitExceededException</code></td>
+                <td>单工具超过 40 次或总计超过 150 次</td>
+                <td>检查工具是否陷入循环；调 <code>spring.ai.tools.limits.*</code></td>
+              </tr>
+              <tr>
+                <td><code>No @Tool annotated methods found in ...</code></td>
+                <td>传入的对象没有 <code>@Tool</code> 方法，或返回了函数类型</td>
+                <td>检查注解；工具方法不要返回 <code>Function</code>/<code>Supplier</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          会话 ID 断言<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/api/BaseChatMemoryAdvisor.java:41">BaseChatMemoryAdvisor.java:41</span>；
+          ToolContext 断言<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/method/MethodToolCallback.java:130">MethodToolCallback.java:130</span>；
+          无工具方法<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/method/MethodToolCallbackProvider.java:78">MethodToolCallbackProvider.java:78</span>。
+        </p>
+
+        <h2 id="output">输出与解析</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你会看到</th>
+                <th>因为</th>
+                <th>改成</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>模板报 <code>Not all variables were replaced...</code></td>
+                <td>提示词里写了 JSON 花括号，被当成占位符</td>
+                <td>转义花括号，或换 <code>&lt; &gt;</code> 分隔符</td>
+              </tr>
+              <tr>
+                <td><code>entity()</code> 解析失败 / 返回 null</td>
+                <td>模型输出带解释文字、markdown，或字段名不匹配</td>
+                <td>加 <code>validateSchema()</code>；用 <code>@JsonProperty</code> 对齐字段</td>
+              </tr>
+              <tr>
+                <td><code>content()</code> 返回 null，后续 NPE</td>
+                <td>没有文本内容（例如只有工具调用）</td>
+                <td>先判空，或改用 <code>chatResponse()</code> 看结构</td>
+              </tr>
+              <tr>
+                <td>流式接口一次性返回</td>
+                <td>MVC 栈返回 <code>Flux</code>，或代理缓冲</td>
+                <td>MVC 用 <code>SseEmitter</code>，WebFlux 返回 <code>Flux</code>，关掉 <code>proxy_buffering</code></td>
+              </tr>
+              <tr>
+                <td>流式接口 30 秒断开</td>
+                <td><code>SseEmitter</code> 没设超时，继承了容器默认的异步超时（Tomcat 常见 30 秒）</td>
+                <td>构造时传 <code>0L</code> 或设置足够大的超时</td>
+              </tr>
+              <tr>
+                <td>流式接口接了 Flux 但无输出</td>
+                <td>冷流没有被订阅</td>
+                <td>交给框架订阅，或显式桥接到 <code>SseEmitter</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          模板校验<span class="src" data-src="spring-ai-template-st/src/main/java/org/springframework/ai/template/st/StTemplateRenderer.java:61">StTemplateRenderer.java:61</span>。
+        </p>
+
+        <h2 id="search">检索与工具行为异常（不报错）</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>现象</th>
+                <th>因为</th>
+                <th>改成</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>模型总说「资料中没有」</td>
+                <td>阈值太高或切块太碎，检索为空</td>
+                <td>先把阈值降到 0 验证能召回，再逐步上调</td>
+              </tr>
+              <tr>
+                <td>回答无关内容</td>
+                <td>默认阈值 0.0，前 K 条全塞进上下文</td>
+                <td>提高阈值、加 metadata 过滤、降低 topK</td>
+              </tr>
+              <tr>
+                <td>带工具的对话里 RAG 检索多次</td>
+                <td>RAG Advisor order 为 0，位于工具循环内侧</td>
+                <td>把 order 调到小于 <code>MIN+300</code>，或接受每轮重检</td>
+              </tr>
+              <tr>
+                <td>工具报错但接口 200</td>
+                <td>默认把异常转成消息回给模型</td>
+                <td>关键工具设 <code>spring.ai.tools.throw-exception-on-error=true</code></td>
+              </tr>
+              <tr>
+                <td>降级到备用模型后结构化输出失败</td>
+                <td>备用模型不支持原生 structured output</td>
+                <td>降级时改为纯文本，或只对非关键路径降级</td>
+              </tr>
+              <tr>
+                <td>429 直接失败、不重试</td>
+                <td>429 属于 4xx，默认归类为不可重试</td>
+                <td><code>spring.ai.retry.on-http-codes=[429]</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="mcp">MCP 专项</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>现象</th>
+                <th>因为</th>
+                <th>改成</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>连上了但工具列表为空</td>
+                <td>类不是 Spring Bean、方法不是 public、或引错 starter</td>
+                <td>加 <code>@Service</code>；HTTP 场景用 <code>-webmvc</code> / <code>-webflux</code></td>
+              </tr>
+              <tr>
+                <td>Windows 上 stdio 起不来</td>
+                <td><code>npx</code> 是 .cmd 脚本</td>
+                <td><code>command: cmd</code> + <code>args: ["/c", "npx", ...]</code></td>
+              </tr>
+              <tr>
+                <td>工具执行 20 秒超时</td>
+                <td><code>request-timeout</code> 默认 20s</td>
+                <td>调大，或把慢工具改成异步任务</td>
+              </tr>
+              <tr>
+                <td><code>/mcp</code> 返回 401 / 跳登录页</td>
+                <td>Spring Security 默认拦截</td>
+                <td>为 <code>/mcp/**</code> 配置认证方式并处理 CSRF</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="how">排查顺序</h2>
+        <div class="steps">
+          <li>
+            <span class="sh">① 先分层</span>
+            <div>是启动失败、请求失败、还是输出不对？三类的原因完全不同。</div>
+          </li>
+          <li>
+            <span class="sh">② 看第一个异常</span>
+            <div>Spring 的异常链很长，最内层的 <code>Caused by</code> 才是真正原因。</div>
+          </li>
+          <li>
+            <span class="sh">③ 确认配置生效</span>
+            <div>用 <code>/actuator/env</code> 或启动日志确认属性的最终值，别只看 yml。</div>
+          </li>
+          <li>
+            <span class="sh">④ 缩小到最小复现</span>
+            <div>去掉 Advisor、工具、RAG，只留一次 <code>call()</code>，看它还崩不崩。</div>
+          </li>
+          <li>
+            <span class="sh">⑤ 打开观测</span>
+            <div>看 trace 里哪一层耗时或报错，比读代码猜快得多。</div>
+          </li>
+        </div>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

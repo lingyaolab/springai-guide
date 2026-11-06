@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spring AI 2.0.2 学习站 · 从 ChatClient 到 RAG 与 Tool Calling</title>
+    <meta
+      name="description"
+      content="基于 Spring AI 2.0.2 源码整理的中文学习站：Boot 4 + JDK 17 + DeepSeek 起步，讲清 ChatClient、结构化输出、流式、ChatMemory、Advisor、RAG、Tool Calling 与 MCP，每处结论标注源码出处。"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="Spring AI 2.0.2 学习站 · 从 ChatClient 到 RAG 与 Tool Calling" />
+    <meta property="og:description" content="Boot 4 + JDK 17 + DeepSeek 起步，讲清 ChatClient、结构化输出、流式、ChatMemory、Advisor、RAG、Tool Calling 与 MCP。" />
+    <script>
+      // 主题要在样式之前定下来，否则暗色用户会看到一瞬白屏
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <link rel="stylesheet" href="assets/base.css" />
+    <link rel="stylesheet" href="assets/diagrams.css" />
+  </head>
+  <body data-page="index" data-root=".">
+    <main>
+      <article class="article">
+        <div class="hero">
+          <h1>把 Spring AI 2.0.2 学到「能自己接进项目」</h1>
+          <p class="lede">
+            这不是官方文档的搬运，而是一套按工程落地顺序重排、每个结论都能回源码验证的教程。默认模型是
+            <strong>DeepSeek</strong>：便宜、国内直连、兼容 OpenAI 协议，适合把例子真正跑起来。示例全部是
+            Spring Boot 4 + Java 17，每一章都有能复制运行的代码、一次请求的完整链路、以及「你会撞到什么错」。
+          </p>
+        </div>
+
+        <div id="progress-card" class="progress-card"></div>
+
+        <h2 id="start-here">我该从哪儿开始</h2>
+        <ol class="steps">
+          <li>
+            <span class="sh">先花 12 分钟读「学习地图」</span>
+            <div>
+              它会告诉你三条主线怎么用、章节为什么是这个顺序、以及没有 API Key 能学到哪一步。<br /><a
+                href="chapters/00-study-map.html"
+                >→ 00 学习地图</a
+              >
+            </div>
+          </li>
+          <li>
+            <span class="sh">装好环境（约 25 分钟）</span>
+            <div>
+              JDK 17 + Spring Boot 4.1 + 两个依赖：<code>spring-ai-starter-model-deepseek</code> 与
+              <code>spring-boot-starter-web</code>。版本全部交给 <code>spring-ai-bom</code>。
+            </div>
+          </li>
+          <li>
+            <span class="sh">跑通第一次对话（约 35 分钟）</span>
+            <div>
+              <a href="chapters/02-chatclient.html">→ 02 ChatClient</a
+              >：从 <code>ChatClient.Builder</code> 注入到 <code>.call().content()</code>，再到流式与多轮记忆。
+            </div>
+          </li>
+        </ol>
+
+        <div class="callout tip">
+          <span class="ct">如果你只想最快验证「这套东西能不能跑」</span>
+          <p>
+            直接看 01 章的<a href="chapters/01-setup.html#minimal">最小可跑</a>：一个 Spring Boot 工程、三行
+            <code>application.yml</code>、一个 <code>CommandLineRunner</code>，补一个
+            <code>DEEPSEEK_API_KEY</code> 就能看到输出。
+          </p>
+        </div>
+
+        <h2 id="three-lines">三条学习主线</h2>
+        <div class="compare">
+          <div class="col pick">
+            <h4>① 跟做线：照抄能跑</h4>
+            <ul>
+              <li>每章「最小可跑」都是<strong>完整</strong>工程结构，含 <code>pom.xml</code> 与配置</li>
+              <li>代码里出现的每个 API 都能在附录 C 的速查表里查到出处</li>
+              <li>目标是「先跑起来」，不追求先看懂</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4>② 理解线：知道它在干什么</h4>
+            <ul>
+              <li>每章「端到端」把一次调用拆成自动装配、 Advisor 链、HTTP 请求三段</li>
+              <li>关键机制给分层图：谁装配谁、配置在哪生效、失败在哪一层</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4>③ 避坑线：出错时知道看哪儿</h4>
+            <ul>
+              <li>每章「陷阱与窍门」按「你会看到 X → 因为 Y → 改成 Z」写</li>
+              <li>重点标出 1.x 到 2.0 的破坏性变更，网上大部分博客仍然停留在旧写法</li>
+            </ul>
+          </div>
+        </div>
+
+        <h2 id="chapters">章节</h2>
+        <p>
+          全部 22 页已可读：第 00–16 章 + 附录 A–E。从环境、ChatClient、流式、记忆、Advisor，到 RAG、向量库、
+          高级检索、Tool Calling、MCP、可观测性、生产化、综合案例与评测。
+        </p>
+
+        <div class="card-grid" data-cards="开始"></div>
+        <h3>对话地基（第 03–06 章）</h3>
+        <div class="card-grid" data-cards="对话地基"></div>
+        <h3>检索增强 RAG（第 07–09 章）</h3>
+        <div class="card-grid" data-cards="检索增强 RAG"></div>
+        <h3>工具与协议（第 10–12 章）</h3>
+        <div class="card-grid" data-cards="工具与协议"></div>
+        <h3>工程化（第 13–16 章）</h3>
+        <div class="card-grid" data-cards="工程化"></div>
+        <h3>附录</h3>
+        <div class="card-grid" data-cards="附录"></div>
+
+        <h2 id="truth">事实来源与版本承诺</h2>
+        <p>
+          本站内容严格对应 <strong>Spring AI 2.0.2</strong> 与 <strong>Spring Boot 4.1.x</strong>，写作时逐条回源核对，
+          来源只有三类：
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>类型</th>
+                <th>路径</th>
+                <th>用来确认什么</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Java 源码</td>
+                <td><code>spring-ai-client-chat/</code>、<code>spring-ai-model/</code>、<code>models/</code></td>
+                <td>方法签名、默认值、抛错点、判定分支</td>
+              </tr>
+              <tr>
+                <td>自动装配</td>
+                <td><code>auto-configurations/</code>、<code>starters/</code></td>
+                <td>配置前缀、生效条件、Bean 的创建顺序</td>
+              </tr>
+              <tr>
+                <td>官方文档源</td>
+                <td><code>spring-ai-docs/src/main/antora/modules/ROOT/pages/</code></td>
+                <td>设计意图、能力边界、术语原文</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          页面上所有 <span class="src">文件名:行号</span> 形的胶囊都是出处标签：单击复制完整路径，Ctrl/Cmd +
+          点击在 GitHub 上打开对应文件。
+        </p>
+
+        <div class="callout warn">
+          <span class="ct">已知边界</span>
+          <ul>
+            <li>
+              Spring AI 2.0 需要 <strong>Spring Boot 4.x</strong>。仍在使用 Boot 3.4/3.5 的项目请留在 Spring AI
+              1.0.x，不要把本站的依赖坐标直接搬过去。
+            </li>
+            <li>
+              官方中文站（docs.springframework.org.cn）已经覆盖 API 参考；本站不重复翻译，只补「学习顺序、可运行工程、
+              版本差异与踩坑」。
+            </li>
+            <li>进度与主题只保存在本机浏览器 <code>localStorage</code>，不会上传任何数据；首页进度卡可导出/导入 JSON。</li>
+          </ul>
+        </div>
+
+        <h2 id="shortcuts">键盘快捷键</h2>
+        <div class="table-wrap">
+          <table>
+            <tbody>
+              <tr>
+                <td><kbd>/</kbd></td>
+                <td>聚焦搜索</td>
+              </tr>
+              <tr>
+                <td><kbd>↑</kbd> <kbd>↓</kbd> <kbd>Enter</kbd></td>
+                <td>在搜索结果里移动、打开</td>
+              </tr>
+              <tr>
+                <td><kbd>←</kbd> <kbd>→</kbd></td>
+                <td>上一章 / 下一章（焦点不在按钮、链接或输入框上时）</td>
+              </tr>
+              <tr>
+                <td><kbd>Esc</kbd></td>
+                <td>关闭搜索、侧栏或目录抽屉</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="about">关于这个站</h2>
+        <p>
+          零构建：整个站就是一堆 <code>.html</code> 加几个手写的 <code>.js</code>/<code>.css</code>，再加一个自动生成的
+          <code>assets/search-index.js</code>（由 <code>node tools/build-search-index.cjs</code> 从各页正文抽取，
+          首次聚焦搜索框才加载）。双击 <code>index.html</code> 就能看，不装 npm、不联网、不依赖 CDN。加一章只需要
+          复制任一章节页改正文，再在 <code>assets/nav.js</code> 里补一行目录，最后重跑一次索引脚本。
+        </p>
+
+        <h2 id="changelog">更新记录</h2>
+        <p class="footnote">
+          站点版本 <strong>v1.1.2</strong>（2026-11-06 发布）· 内容对应 Spring AI 2.0.2 · 完整记录见仓库
+          <code>CHANGELOG.md</code>。
+        </p>
+        <ul>
+          <li><strong>正文完成</strong>：第 00–16 章全部可读，覆盖对话、记忆、Advisor、流式、RAG、向量库、工具、MCP、生产化与评测。</li>
+          <li><strong>评测</strong>：回归集结构、recall@k / MRR / hit rate、内置 Evaluator、LLM-as-judge 偏差与 CI 门禁。</li>
+          <li><strong>附录完成</strong>：术语表、报错速查、API 速查、1.x → 2.0 迁移、源码地图。</li>
+          <li><strong>核对</strong>：292 条 <code>file:line</code> 出处，发布前全部脚本校验。</li>
+          <li><strong>发布</strong>：404 页、favicon、robots、GitHub Pages 工作流；发布前自动重建索引并跑静态检查。</li>
+        </ul>
+      </article>
+    </main>
+
+    <script src="assets/nav.js"></script>
+    <script src="assets/mini-highlight.js"></script>
+    <script src="assets/site.js"></script>
+  </body>
+</html>

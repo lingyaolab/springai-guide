@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 Tool Calling：@Tool 与 schema 生成、ToolCallingAdvisor 的循环、ToolContext、异常默认不抛、40/150 调用上限、记忆在环内环外、流式工具调用。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="10 Tool Calling：让模型调用你的 Java 方法 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="@Tool、ToolCallingAdvisor 循环、ToolContext、异常与调用上限、记忆在环内环外。" />
+    <title>10 Tool Calling：让模型调用你的 Java 方法 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="10-tool-calling" data-root="..">
+    <main>
+      <article class="article">
+        <h1>10 · Tool Calling</h1>
+        <p class="lede">
+          工具调用的本质是一个<strong>协议</strong>：模型不执行你的代码，它只返回「我要调用 <code>get_weather</code>，
+          参数是 <code>{"city":"杭州"}</code>」；真正执行的是框架，把结果再发回给模型。理解这个分工，
+          才能理解为什么「工具没被调用」「参数是 null」「异常没抛出来」都有各自不同的原因。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用一个 <code>@Tool</code> 方法跑通「模型决定调用 → 框架执行 → 模型总结」的完整循环</li>
+          <li>说清 <code>ToolCallingAdvisor</code> 与 <code>ToolCallingManager</code> 的分工，以及循环什么时候结束</li>
+          <li>用 <code>ToolContext</code> 把 userId / tenantId 这类业务上下文传给工具，而不塞进提示词</li>
+          <li>解释工具异常为什么默认不抛给调用方，以及 40 / 150 两个调用上限从哪来</li>
+        </ul>
+
+        <h2 id="why">先说为什么：模型只「提议」，你负责「执行」</h2>
+        <p>
+          模型没有你的 JVM、数据库和文件系统。它能做的只有一件事：在响应里返回一个结构化的
+          <code>tool_calls</code> 数组，告诉你「我想调哪个函数、参数是什么」。执行权始终在你这边。
+        </p>
+        <div class="stack">
+          <div class="layer accent">
+            <span class="lt">① 你注册工具定义</span>
+            <div class="ld">
+              名字、描述、参数 JSON Schema 随请求一起发给模型。
+              <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/support/ToolDefinitions.java:52">ToolDefinitions.java:52</span>
+            </div>
+          </div>
+          <div class="layer in2">
+            <span class="lt">② 模型返回 tool_calls</span>
+            <div class="ld">它只输出「调用意图」，不接触你的代码。</div>
+          </div>
+          <div class="layer in3">
+            <span class="lt">③ 框架执行并回填结果</span>
+            <div class="ld">
+              <code>ToolCallingManager</code> 找到对应 <code>ToolCallback</code>，反射调用你的方法，把返回值作为
+              tool 消息追加进对话。
+              <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/model/tool/DefaultToolCallingManager.java:178">DefaultToolCallingManager.java:178</span>
+            </div>
+          </div>
+          <div class="layer">
+            <span class="lt">④ 带着结果再问一次模型</span>
+            <div class="ld">模型看到工具结果，生成最终回答；如果它还想调工具，循环继续。</div>
+          </div>
+        </div>
+        <div class="callout">
+          <span class="ct">为什么工具描述比方法名重要</span>
+          <p>
+            模型选不选这个工具，主要看 <code>description</code> 和参数 schema，而不是方法名。描述写得含糊
+            （「查询数据」），模型就不知道该在什么时候用；描述写得具体（「按城市名查询当前天气，返回温度与天气现象」），
+            命中率会明显提高。
+          </p>
+        </div>
+
+        <h2 id="minimal">最小可跑：一个天气工具</h2>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/WeatherTools.java">package com.example.demo;
+
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.stereotype.Component;
+
+@Component
+class WeatherTools {
+
+    @Tool(description = "按城市名查询当前天气，返回温度和天气现象")
+    String currentWeather(
+            @ToolParam(description = "城市名，例如杭州、北京") String city) {
+        // 真实项目里这里调气象 API；示例直接返回固定值
+        return city + "：18℃，多云";
+    }
+}</pre>
+        <pre data-lang="java" data-file="src/main/java/com/example/demo/ChatService.java">@Service
+class ChatService {
+
+    private final ChatClient chatClient;
+    private final WeatherTools weatherTools;
+
+    ChatService(ChatClient.Builder builder, WeatherTools weatherTools) {
+        this.chatClient = builder.build();
+        this.weatherTools = weatherTools;
+    }
+
+    String ask(String question) {
+        return this.chatClient.prompt()
+                .user(question)
+                .tools(this.weatherTools)
+                .call()
+                .content();
+    }
+}</pre>
+        <p>
+          问「杭州今天要带伞吗？」，实际会发生两次模型调用：第一次返回 <code>tool_calls</code>，框架执行
+          <code>currentWeather("杭州")</code>，第二次把结果带回模型，模型再生成「不用带伞」这类回答。
+        </p>
+
+        <h2 id="line-by-line">逐行解读：注解里的四个字段</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>字段</th>
+                <th>作用</th>
+                <th>不写会怎样</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>name</code></td>
+                <td>工具名，默认取方法名</td>
+                <td>方法名带空格或括号时，部分厂商会拒绝</td>
+              </tr>
+              <tr>
+                <td><code>description</code></td>
+                <td>给模型看的用途说明</td>
+                <td>模型只能靠名字猜，命中率下降</td>
+              </tr>
+              <tr>
+                <td><code>returnDirect</code></td>
+                <td>为 true 时结果直接返回给调用方，不再问模型</td>
+                <td>默认 false，结果会回填给模型再总结一次</td>
+              </tr>
+              <tr>
+                <td><code>resultConverter</code></td>
+                <td>把返回值转成字符串的策略</td>
+                <td>默认用 Jackson 序列化对象</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          注解字段定义<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/annotation/Tool.java:54">Tool.java:54</span>；
+          工具名建议只用字母、数字、下划线、连字符和点<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/annotation/Tool.java:42">Tool.java:42</span>。
+        </p>
+        <p>
+          参数的 schema 不是手写的：框架会扫描方法签名，把参数名、类型、<code>@ToolParam</code> 的描述与是否必填
+          一起生成 JSON Schema。默认所有参数必填；加 <code>required = false</code> 或 <code>@Nullable</code> 才会变成可选。
+        </p>
+        <pre data-lang="json" data-file="模型看到的工具定义（简化）">{
+  "type": "function",
+  "function": {
+    "name": "currentWeather",
+    "description": "按城市名查询当前天气，返回温度和天气现象",
+    "parameters": {
+      "type": "object",
+      "properties": { "city": { "type": "string", "description": "城市名，例如杭州、北京" } },
+      "required": ["city"]
+    }
+  }
+}</pre>
+        <div class="callout warn">
+          <span class="ct">工具方法不能返回函数类型</span>
+          <p>
+            如果方法返回 <code>Function</code> / <code>Supplier</code> / <code>Consumer</code>，框架会打一条 warn
+            并<strong>忽略</strong>这个方法——因为它无法把函数序列化成工具结果。返回 DTO、字符串、列表都可以。
+            <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/method/MethodToolCallbackProvider.java:110">MethodToolCallbackProvider.java:110</span>
+          </p>
+        </div>
+
+        <h2 id="loop">循环：ToolCallingAdvisor 什么时候停</h2>
+        <p>
+          2.0 起，工具循环从 <code>ChatModel</code> 内部搬到了 <code>ToolCallingAdvisor</code>。它由
+          <code>DefaultChatClient</code> 自动注册，order 是 <code>HIGHEST_PRECEDENCE + 300</code>，
+          所以你不需要、也不应该再手动 <code>.advisors(ToolCallingAdvisor.builder().build())</code>。
+        </p>
+        <pre data-lang="java" data-file="循环骨架（简化）">do {
+    // 1. 带上工具定义，调用模型
+    response = callAdvisorChain.copy(this).nextCall(request);
+
+    // 2. 判断响应里有没有 tool_calls
+    isToolCall = toolExecutionEligibilityChecker.isToolCallResponse(response);
+
+    if (isToolCall) {
+        // 3. 执行工具，把 tool 消息拼回历史
+        result = toolCallingManager.executeToolCalls(
+                new Prompt(fullTurnHistory, options), response);
+        instructions = result.conversationHistory();
+    }
+} while (isToolCall);   // 4. 直到模型不再要求调工具</pre>
+        <p class="src-line">
+          循环实现<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ToolCallingAdvisor.java:149">ToolCallingAdvisor.java:149</span>，
+          order 常量<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ToolCallingAdvisor.java:75">ToolCallingAdvisor.java:75</span>；
+          官方对循环步骤的描述<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/api/tools.adoc:224">tools.adoc:224</span>。
+        </p>
+        <div class="callout tip">
+          <span class="ct">「模型没调用工具」先查这三件事</span>
+          <p>
+            ① 工具描述是否说清了「什么时候用」；② 参数 schema 是否有必填项但模型不知道该填什么；③ 是否把工具加到了
+            <strong>这次请求</strong>（<code>.tools(...)</code>）或客户端的默认工具（<code>.defaultTools(...)</code>）上。
+            注意 <code>.tools()</code> 是<strong>追加</strong>到默认工具，不是替换。
+          </p>
+        </div>
+
+        <h2 id="context">ToolContext：业务上下文不要塞进提示词</h2>
+        <p>
+          用户 ID、租户 ID、请求追踪号这类信息不该让模型看到，也不该出现在参数 schema 里。做法是：方法多声明一个
+          <code>ToolContext</code> 参数，调用时通过 <code>.toolContext(...)</code> 传入。
+        </p>
+        <pre data-lang="java" data-file="用 ToolContext 拿租户">@Tool(description = "查询当前租户下指定状态的订单")
+List&lt;Order&gt; myOrders(
+        @ToolParam(description = "订单状态：PAID / SHIPPED / CLOSED") String status,
+        ToolContext context) {
+    String tenantId = (String) context.getContext().get("tenantId");
+    return orderRepository.findByTenantAndStatus(tenantId, status);
+}</pre>
+        <pre data-lang="java" data-file="调用时传入">String answer = chatClient.prompt()
+        .user("我有哪些已发货的订单？")
+        .tools(orderTools)
+        .toolContext(Map.of("tenantId", "acme"))
+        .call()
+        .content();</pre>
+        <div class="callout warn">
+          <span class="ct">方法声明了 ToolContext，但调用时没传</span>
+          <p>
+            框架会直接抛 <code>IllegalArgumentException: ToolContext is required by the method as an argument</code>，
+            而不是把 <code>null</code> 传进去。这是有意的：让错误在第一次调用就暴露，而不是让工具悄悄用错租户。
+            <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/method/MethodToolCallback.java:130">MethodToolCallback.java:130</span>
+          </p>
+        </div>
+        <p>
+          默认工具上下文（<code>defaultToolContext</code>）与调用级 <code>toolContext</code> 会<strong>合并</strong>，
+          调用级覆盖同名 key。适合把「固定租户」放默认值、「本次请求 ID」放调用级。
+        </p>
+
+        <h2 id="errors">异常：默认不抛，而是回给模型</h2>
+        <p>
+          工具方法抛异常时，默认行为<strong>不是</strong>把异常抛给你的 Controller，而是把异常信息包装成一条
+          tool 响应发回模型，让模型决定怎么处理（道歉、换参数重试、换个工具）。
+        </p>
+        <pre data-lang="java" data-file="默认行为">// DefaultToolExecutionExceptionProcessor 的默认配置
+private static final boolean DEFAULT_ALWAYS_THROW = false;</pre>
+        <p class="src-line">
+          默认不抛<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/execution/DefaultToolExecutionExceptionProcessor.java:41">DefaultToolExecutionExceptionProcessor.java:41</span>；
+          想改成抛给调用方，设 <code>spring.ai.tools.throw-exception-on-error=true</code><span class="src" data-src="auto-configurations/models/tool/spring-ai-autoconfigure-model-tool/src/main/java/org/springframework/ai/model/tool/autoconfigure/ToolCallingProperties.java:65">ToolCallingProperties.java:65</span>。
+        </p>
+        <div class="compare">
+          <div class="col">
+            <h4>默认：回给模型</h4>
+            <ul>
+              <li>模型能看到「参数不合法」「库存不足」这类信息</li>
+              <li>可以自己修正参数再试</li>
+              <li>风险：错误被「圆」过去，调用方以为成功</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4><code>throw-exception-on-error=true</code></h4>
+            <ul>
+              <li>异常直接冒泡到你的业务代码</li>
+              <li>适合资金、扣库存等不能重试的操作</li>
+              <li>需要自己处理重试与幂等</li>
+            </ul>
+          </div>
+        </div>
+
+        <h2 id="limits">调用上限：40 与 150</h2>
+        <p>
+          工具循环是 <code>do-while</code>，如果模型反复要求调用同一个工具，没有上限就会无限烧 token。
+          2.0.2 内置了两个默认限制：
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>限制</th>
+                <th>默认值</th>
+                <th>作用范围</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>单个工具调用次数</td>
+                <td>40</td>
+                <td>一轮对话内，同一个工具最多 40 次</td>
+              </tr>
+              <tr>
+                <td>工具调用总次数</td>
+                <td>150</td>
+                <td>一轮对话内，所有工具合计最多 150 次</td>
+              </tr>
+              <tr>
+                <td>超限行为</td>
+                <td><code>THROW</code></td>
+                <td>抛 <code>ToolCallLimitExceededException</code>；可改成返回错误响应</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre data-lang="yaml" data-file="application.yml">spring:
+  ai:
+    tools:
+      throw-exception-on-error: false
+      limits:
+        max-calls-per-tool-default: 40
+        max-total-tool-calls: 150
+        on-limit-exceeded: THROW      # 或 RETURN_ERROR_RESPONSE
+        # max-calls-per-tool:
+        #   searchDocs: 5</pre>
+        <p class="src-line">
+          默认上限<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/model/tool/DefaultToolCallingManager.java:100">DefaultToolCallingManager.java:100</span>、
+          <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/model/tool/DefaultToolCallingManager.java:107">DefaultToolCallingManager.java:107</span>；
+          配置项与默认值<span class="src" data-src="auto-configurations/models/tool/spring-ai-autoconfigure-model-tool/src/main/java/org/springframework/ai/model/tool/autoconfigure/ToolCallingProperties.java:101">ToolCallingProperties.java:101</span>。
+        </p>
+
+        <h2 id="memory">记忆在环内还是环外</h2>
+        <p>
+          工具循环会产生 <code>tool_calls</code> 与 <code>tool</code> 消息。这些要不要进记忆，取决于记忆 Advisor 的
+          order：
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>位置</th>
+                <th>order</th>
+                <th>记忆里留下什么</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>环外（默认）</td>
+                <td><code>HIGHEST_PRECEDENCE + 200</code></td>
+                <td>只留最终 user 与 assistant 消息，工具过程全部丢弃</td>
+              </tr>
+              <tr>
+                <td>环内</td>
+                <td>大于 <code>+300</code>（如 <code>+400</code>）</td>
+                <td>连 tool_calls 与工具结果一起保存，下一轮模型能看到「上次试过什么」</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          放进环内时，<code>ToolCallingAdvisor</code> 的内部历史需要关掉，否则会重复写入。用自动注册的 Advisor 时
+          框架会自动检测环内的 <code>MemoryAdvisor</code> 并关闭，不需要你配置。
+        </p>
+        <div class="callout warn">
+          <span class="ct">不是所有存储都能存工具消息</span>
+          <p>
+            2.0 内置实现里，<code>InMemoryChatMemoryRepository</code>、Redis 和 Neo4j 支持完整的工具消息；
+            <strong>JDBC 仓库目前不支持</strong>。把 JDBC + 环内记忆组合使用，会遇到反序列化或丢消息的问题。
+            <span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/api/tools.adoc:294">tools.adoc:294</span>
+          </p>
+        </div>
+
+        <h2 id="streaming">流式工具调用：参数是碎片拼起来的</h2>
+        <p>
+          流式模式下，模型返回的 <code>tool_calls</code> 不是一次到齐的：函数名可能第一块就来，参数 JSON 会被拆成
+          很多 delta 片段。DeepSeek 用一个专门的 helper 把相邻 chunk 合并，拼成完整的工具调用后才执行。
+        </p>
+        <pre data-lang="java" data-file="DeepSeek 的合并入口">public ChatCompletionChunk merge(@Nullable ChatCompletionChunk previous, ChatCompletionChunk current) { ... }</pre>
+        <p class="src-line">
+          合并逻辑<span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/api/DeepSeekStreamFunctionCallingHelper.java:43">DeepSeekStreamFunctionCallingHelper.java:43</span>；
+          流式请求走 <code>WebClient</code><span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/api/DeepSeekApi.java:177">DeepSeekApi.java:177</span>。
+        </p>
+        <p>
+          对业务代码来说这是透明的：<code>.stream().content()</code> 仍然只吐出最终文本。但如果你在流式过程中做进度提示，
+          不要指望能看到工具参数——工具执行发生在流结束之后、第二次模型调用之前。
+        </p>
+
+        <h2 id="return-direct">returnDirect：跳过第二次模型调用</h2>
+        <p>
+          有些工具的返回值本身就是最终答案，不需要模型再总结一遍（例如「把这段文本原样返回」「生成下载链接」）。
+          把 <code>returnDirect</code> 设为 true，框架执行完工具后<strong>直接返回</strong>，省掉一次模型调用。
+        </p>
+        <pre data-lang="java" data-file="直接返回">@Tool(description = "生成报表下载链接", returnDirect = true)
+String exportReport(@ToolParam(description = "报表日期，格式 yyyy-MM-dd") String date) {
+    return "https://internal.example.com/reports/" + date + ".xlsx";
+}</pre>
+        <p class="src-line">
+          字段定义<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/tool/annotation/Tool.java:64">Tool.java:64</span>；
+          Advisor 里的短路分支<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ToolCallingAdvisor.java:198">ToolCallingAdvisor.java:198</span>。
+        </p>
+
+        <h2 id="cheatsheet">速查表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>你要做的事</th>
+                <th>写法</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>声明工具</td>
+                <td><code>@Tool(description = "...")</code> + <code>@ToolParam(description = "...")</code></td>
+              </tr>
+              <tr>
+                <td>本次请求加工具</td>
+                <td><code>.tools(bean)</code>（追加到默认工具）</td>
+              </tr>
+              <tr>
+                <td>全局默认工具</td>
+                <td><code>ChatClient.builder(m).defaultTools(bean).build()</code></td>
+              </tr>
+              <tr>
+                <td>传业务上下文</td>
+                <td>方法加 <code>ToolContext</code> 参数 + <code>.toolContext(Map)</code></td>
+              </tr>
+              <tr>
+                <td>直接返回结果</td>
+                <td><code>@Tool(returnDirect = true)</code></td>
+              </tr>
+              <tr>
+                <td>异常抛给调用方</td>
+                <td><code>spring.ai.tools.throw-exception-on-error=true</code></td>
+              </tr>
+              <tr>
+                <td>改调用上限</td>
+                <td><code>spring.ai.tools.limits.max-total-tool-calls</code></td>
+              </tr>
+              <tr>
+                <td>手动注册 ToolCallback</td>
+                <td><code>.toolCallbacks(new MethodToolCallbackProvider(bean).getToolCallbacks())</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">同一条链上出现两个 <code>ToolCallingAdvisor</code></span>
+          <p>
+            <strong>因为</strong>2.0 会自动注册一个，你又手动加了一个，工具会执行两次。
+            <strong>改成</strong>删掉手动注入；需要定制时，用 <code>spring.ai.chat.client.tool-calling.advisor-order</code>
+            或提供一个 <code>ToolCallingAdvisor.Builder</code> Bean。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">工具报错，但接口返回 200，内容是「抱歉，查询失败」</span>
+          <p>
+            <strong>因为</strong>默认 <code>throwExceptionOnError=false</code>，异常被转成消息回给模型，模型把它「圆」了过去。
+            <strong>改成</strong>关键业务工具设 <code>spring.ai.tools.throw-exception-on-error=true</code>，并在工具内部
+            做幂等与参数校验。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">工具没被调用，模型直接编了一个答案</span>
+          <p>
+            <strong>因为</strong>描述太笼统，或者工具根本没进这次请求。<strong>改成</strong>把 description 写成
+            「在什么场景下用、返回什么」，并确认 <code>.tools(...)</code> / <code>.defaultTools(...)</code> 生效。
+          </p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">调用了错误的租户 / 越权</span>
+          <p>
+            <strong>因为</strong>把 tenantId 当成工具参数，让模型填。<strong>改成</strong>用 <code>ToolContext</code>
+            传，模型永远看不到也不可篡改。
+          </p>
+        </div>
+        <div class="callout tip">
+          <span class="ct">工具数量到 30+ 时，考虑渐进式披露</span>
+          <p>
+            默认每轮把所有工具定义都发给模型，工具多了会挤占上下文、降低选择准确率。2.0.2 提供了
+            <code>ToolSearchToolCallingAdvisor</code>，先让模型「搜索工具」，只注入相关的那几个。
+          </p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>模型知道你的 Java 方法实现吗？它决定的是什么、不决定什么？</li>
+          <li>一次带工具的对话，最少会调用几次模型？<code>returnDirect = true</code> 时会变成几次？</li>
+          <li>记忆 Advisor 的 order 从 200 改成 400，记忆里会多出哪两类消息？为什么 JDBC 仓库不适合这个组合？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把 <code>currentWeather</code> 的 description 改成「查询数据」，对比模型是否还会调用它。</li>
+          <li>让工具故意抛异常，分别在 <code>throw-exception-on-error=false/true</code> 下观察返回值差异。</li>
+          <li>给工具加一个 <code>ToolContext</code> 参数，调用时传 <code>tenantId</code>，验证模型无法篡改这个值。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章「11 MCP 客户端」会把工具从「本地 Java 方法」扩展到「外部进程提供的工具」——
+          接口仍然是 <code>ToolCallback</code>，但工具的来源、生命周期和安全边界完全不同。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

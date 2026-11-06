@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Spring AI 学习站">
+  <rect width="64" height="64" rx="14" fill="#3f7d20"/>
+  <path d="M32 11c8 6 13 13 13 21a13 13 0 1 1-26 0c0-8 5-15 13-21Z" fill="#ffffff"/>
+  <path d="M32 22c4 4 6 8 6 12a6 6 0 1 1-12 0c0-4 2-8 6-12Z" fill="#8bc34a"/>
+</svg>

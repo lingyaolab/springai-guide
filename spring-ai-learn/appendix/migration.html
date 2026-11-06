@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 1.x 升级到 2.0 的破坏性变更：配置项去掉 .options、默认温度移除、starter 改名、记忆会话 ID 必填、PromptChatMemoryAdvisor 移除、ChatClient 工具调用变化、JDBC sequence_id。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="D 版本迁移：1.x → 2.0 的破坏性变更 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="配置、记忆、工具、ChatClient 与模块的迁移清单，每条带官方 upgrade-notes 出处。" />
+    <title>D 版本迁移：1.x → 2.0 的破坏性变更 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="migration" data-root="..">
+    <main>
+      <article class="article">
+        <h1>附录 D · 版本迁移</h1>
+        <p class="lede">
+          从 Spring AI 1.1.x 升到 2.0，大部分代码能编译，但<strong>配置项、记忆 Advisor、工具注册方式</strong>
+          有硬性变化。这一页按「先升什么、再改什么」排序，每条都标了官方 upgrade-notes 的位置。
+        </p>
+
+        <h2 id="who">这次升级到底动了什么</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>层</th>
+                <th>变化</th>
+                <th>影响</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>运行时</td>
+                <td>要求 Spring Boot 4.0.x / 4.1.x</td>
+                <td>Boot 3.x 工程不能直接升</td>
+              </tr>
+              <tr>
+                <td>配置</td>
+                <td>所有模型的 <code>.options</code> 层级被拍平</td>
+                <td>属性名要改，旧写法已弃用</td>
+              </tr>
+              <tr>
+                <td>记忆</td>
+                <td>会话 ID 必填、默认 order 改为 <code>MIN+200</code>、移除两个 API</td>
+                <td>运行期抛异常或编译失败</td>
+              </tr>
+              <tr>
+                <td>工具</td>
+                <td><code>ToolCallingAdvisor</code> 自动注册、<code>ToolSpec</code> API 移除</td>
+                <td>重复注册会执行两次</td>
+              </tr>
+              <tr>
+                <td>客户端</td>
+                <td><code>.options()</code> 只收 Builder</td>
+                <td>编译期报错</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="steps">推荐升级顺序</h2>
+        <div class="steps">
+          <li>
+            <span class="sh">① 先升 Boot，再升 Spring AI</span>
+            <div>先把工程升到 Boot 4.1.x 并跑通现有测试，再引入 2.0 BOM。两个大版本一起升，出问题很难定位。</div>
+          </li>
+          <li>
+            <span class="sh">② 换 BOM 与 starter 坐标</span>
+            <div>统一成 <code>spring-ai-starter-model-*</code> / <code>spring-ai-starter-vector-store-*</code>。</div>
+          </li>
+          <li>
+            <span class="sh">③ 批量改配置</span>
+            <div>去掉 <code>.options</code>，显式设置 temperature（默认值已移除）。</div>
+          </li>
+          <li>
+            <span class="sh">④ 改记忆与工具代码</span>
+            <div>会话 ID 改为每次调用传；删除手动注册的 <code>ToolCallingAdvisor</code>。</div>
+          </li>
+          <li>
+            <span class="sh">⑤ 迁移数据库</span>
+            <div>JDBC 记忆表补 <code>sequence_id</code>；向量库按新维度重建。</div>
+          </li>
+          <li>
+            <span class="sh">⑥ 跑回归集</span>
+            <div>温度默认值、记忆 order、工具循环都变了，输出风格与调用次数可能不同。</div>
+          </li>
+        </ol>
+        </div>
+
+        <h2 id="config">配置：去掉 .options，补上温度</h2>
+        <p>
+          2.0 把所有模型（chat / embedding / image / audio / moderation / OCR）的嵌套 <code>options</code>
+          层级拍平：原来的 <code>xxx.options.model</code> 变成 <code>xxx.model</code>。旧属性还留着兼容，但嵌套的
+          <code>Options</code> 类与 <code>getOptions()</code> 都已弃用。
+        </p>
+        <pre data-lang="properties" data-file="迁移前后"># 之前
+spring.ai.deepseek.chat.options.model=deepseek-chat
+spring.ai.deepseek.chat.options.temperature=0.7
+
+# 之后
+spring.ai.deepseek.chat.model=deepseek-v4-flash
+spring.ai.deepseek.chat.temperature=0.7</pre>
+        <p class="src-line">
+          拍平说明<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:830">upgrade-notes.adoc:830</span>。
+        </p>
+        <div class="callout warn">
+          <span class="ct">默认温度被移除了</span>
+          <p>
+            1.x 里 Spring AI 给大多数模型设了 <code>0.7</code> 的默认温度；2.0 改为使用厂商自己的默认值。
+            升级后如果你依赖过 <code>0.7</code>，输出风格会变，必须显式配置。
+            <span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:2223">upgrade-notes.adoc:2223</span>
+          </p>
+        </div>
+        <p>
+          starter 也要换成新命名。2.0.2 的 <code>starters/</code> 目录里是
+          <code>spring-ai-starter-model-openai</code> 这种形式；1.x 的
+          <code>spring-ai-openai-spring-boot-starter</code> 已经不存在。
+        </p>
+        <p class="src-line">
+          当前命名<span class="src" data-src="starters/spring-ai-starter-model-openai/pom.xml:10">starter-model-openai/pom.xml:10</span>。
+        </p>
+
+        <h2 id="memory">记忆：四个硬变化</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>变化</th>
+                <th>你会遇到</th>
+                <th>怎么改</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>会话 ID 必填</td>
+                <td>运行期 <code>IllegalArgumentException: conversationId cannot be null</code></td>
+                <td>每次调用传 <code>ChatMemory.CONVERSATION_ID</code></td>
+              </tr>
+              <tr>
+                <td>移除 <code>DEFAULT_CONVERSATION_ID</code></td>
+                <td>编译失败</td>
+                <td>用自己的会话 ID 生成规则</td>
+              </tr>
+              <tr>
+                <td>移除 Builder 的 <code>.conversationId()</code></td>
+                <td>编译失败</td>
+                <td>改为调用时传参</td>
+              </tr>
+              <tr>
+                <td>移除 <code>PromptChatMemoryAdvisor</code></td>
+                <td>编译失败</td>
+                <td>换成 <code>MessageChatMemoryAdvisor</code>，Builder 用法一致</td>
+              </tr>
+              <tr>
+                <td>默认 order 从 <code>MIN+1000</code> 改为 <code>MIN+200</code></td>
+                <td>记忆位置变化，工具消息不再进记忆</td>
+                <td>默认就是「环外」，需要环内时显式调 order 并关闭内部历史</td>
+              </tr>
+              <tr>
+                <td>JDBC 表新增 <code>sequence_id</code></td>
+                <td>旧表无法正确排序</td>
+                <td>加列并按会话顺序回填</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          会话 ID 必填<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:1363">upgrade-notes.adoc:1363</span>；
+          移除常量<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:1369">upgrade-notes.adoc:1369</span>；
+          移除 Builder 方法<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:1390">upgrade-notes.adoc:1390</span>；
+          移除 Prompt 版 Advisor<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:1450">upgrade-notes.adoc:1450</span>；
+          order 变化<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:407">upgrade-notes.adoc:407</span>；
+          sequence_id<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:741">upgrade-notes.adoc:741</span>。
+        </p>
+
+        <h2 id="tools">工具：别再加第二个 ToolCallingAdvisor</h2>
+        <p>
+          2.0 的 <code>DefaultChatClient</code> 会<strong>自动注册</strong>一个 <code>ToolCallingAdvisor</code>。
+          你原来手动加的 <code>.advisors(ToolCallingAdvisor.builder().build())</code> 会导致链上出现两个，
+          工具被执行两次。
+        </p>
+        <pre data-lang="java" data-file="迁移前后">// 之前：手动注册
+chatClient.prompt("今天天气")
+    .tools(weatherTool)
+    .advisors(ToolCallingAdvisor.builder().build())
+    .call().content();
+
+// 之后：交给自动注册
+chatClient.prompt("今天天气")
+    .tools(weatherTool)
+    .call().content();</pre>
+        <p>
+          另外，<code>tools(Consumer&lt;ToolSpec&gt;)</code> 与 <code>ToolSpec</code> 接口被移除；
+          <code>.tools(...)</code> 现在直接接受 <code>ToolCallback</code>、<code>ToolCallbackProvider</code>、
+          <code>@Tool</code> 对象及其数组/集合。工具上下文改用独立的 <code>.toolContext(...)</code>。
+        </p>
+        <p class="src-line">
+          自动注册与 <code>ToolAdvisor</code> 标记<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:1090">upgrade-notes.adoc:1090</span>；
+          <code>ToolSpec</code> 移除<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:1154">upgrade-notes.adoc:1154</span>。
+        </p>
+
+        <h2 id="client">ChatClient：options 只收 Builder</h2>
+        <pre data-lang="java" data-file="迁移前后">// 之前：传构建好的实例
+Options opts = DeepSeekChatOptions.builder().temperature(0.2).build();
+chatClient.prompt().options(opts).call().content();
+
+// 之后：传 Builder
+chatClient.prompt()
+    .options(DeepSeekChatOptions.builder().temperature(0.2))
+    .call().content();</pre>
+        <p>
+          这个约束只作用于 <code>ChatClient</code>；直接调 <code>ChatModel.call(Prompt)</code> 时，Prompt 里仍要放
+          完整构建的 Options，而且模型不会做字段级合并。
+        </p>
+        <p class="src-line">
+          Options Builder 约束<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:1476">upgrade-notes.adoc:1476</span>。
+        </p>
+
+        <h2 id="modules">模块与依赖：几个改名与移除</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>旧</th>
+                <th>新</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>spring-ai-advisors-vector-store</code></td>
+                <td><code>spring-ai-vector-store-advisor</code></td>
+                <td>RAG Advisor 所在模块</td>
+              </tr>
+              <tr>
+                <td><code>spring-ai-autoconfigure-model-chat-memory-redis</code></td>
+                <td><code>...-chat-memory-repository-redis</code></td>
+                <td>2.0.1 改名，配置前缀同步变化</td>
+              </tr>
+              <tr>
+                <td><code>spring.ai.chat.memory.redis.*</code></td>
+                <td><code>spring.ai.chat.memory.repository.redis.*</code></td>
+                <td>旧前缀已弃用</td>
+              </tr>
+              <tr>
+                <td><code>spring-ai-hanadb-store</code></td>
+                <td>已移除</td>
+                <td>需要换向量库</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          Advisor 模块改名<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:376">upgrade-notes.adoc:376</span>；
+          Redis 改名<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:48">upgrade-notes.adoc:48</span>；
+          移除模块<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:1357">upgrade-notes.adoc:1357</span>。
+        </p>
+
+        <h2 id="checklist">迁移检查清单</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>检查项</th>
+                <th>确认方式</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Boot 版本</td>
+                <td><code>mvn dependency:tree</code> 里是 4.0.x / 4.1.x</td>
+              </tr>
+              <tr>
+                <td>starter 坐标</td>
+                <td>没有 <code>*-spring-boot-starter</code> 形式的旧 AI 依赖</td>
+              </tr>
+              <tr>
+                <td>配置项</td>
+                <td>全局搜索 <code>.options.</code>，确认已去掉</td>
+              </tr>
+              <tr>
+                <td>温度</td>
+                <td>需要固定行为的地方显式设置</td>
+              </tr>
+              <tr>
+                <td>记忆</td>
+                <td>所有记忆调用都传了 <code>CONVERSATION_ID</code></td>
+              </tr>
+              <tr>
+                <td>工具</td>
+                <td>没有手动注册 <code>ToolCallingAdvisor</code></td>
+              </tr>
+              <tr>
+                <td>数据库</td>
+                <td>JDBC 记忆表有 <code>sequence_id</code></td>
+              </tr>
+              <tr>
+                <td>向量库</td>
+                <td>维度、模型、索引三者一致</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">迁移期最常见的四个坑</h2>
+        <div class="callout warn">
+          <span class="ct">能编译，但启动报 <code>NoSuchMethodError</code></span>
+          <p>Boot 还是 3.x，或者某个传递依赖把旧版 Spring 拉了进来。用 <code>dependency:tree</code> 找出来排掉。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">记忆突然「不记得」了</span>
+          <p>默认 order 变了，记忆现在在工具循环外；或者没传会话 ID，异常被上层吞掉。先看日志里的第一个异常。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">工具执行两次</span>
+          <p>链上有两个 <code>ToolCallingAdvisor</code>。删掉手动注册的那个。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">回答风格变了</span>
+          <p>默认温度从 0.7 变为厂商默认值。想保持原样就显式配置。</p>
+        </div>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>
