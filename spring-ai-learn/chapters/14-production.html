@@ -116,7 +116,7 @@
           <p>
             默认模板只重试 <code>TransientAiException</code> 与 <code>ResourceAccessException</code>（网络层）；
             4xx 会被错误处理器归类为 <code>NonTransientAiException</code>，直接抛出。这个分类发生在响应错误处理器里，
-            不是模型层。<span class="src" data-src="spring-ai-retry/src/main/java/org/springframework/ai/retry/RetryUtils.java:111">RetryUtils.java:111</span>
+            不是模型层。<span class="src" data-src="spring-ai-retry/src/main/java/org/springframework/ai/retry/RetryUtils.java:89">RetryUtils.java:89</span>
           </p>
         </div>
         <div class="callout warn">
@@ -163,7 +163,7 @@
               <tr>
                 <td>流式总时长</td>
                 <td>60–120s</td>
-                <td><code>Flux.timeout(...)</code></td>
+                <td><code>Flux.take(...)</code> / <code>takeUntilOther(...)</code></td>
                 <td>连接建立后一直有数据但总也结束不了</td>
               </tr>
             </tbody>
@@ -180,8 +180,9 @@ RestClientCustomizer restClientTimeout() {
 }</pre>
         <p>
           Spring AI 的模型自动装配使用容器里的 <code>RestClient.Builder</code> / <code>WebClient.Builder</code>，
-          所以通过 Boot 的 customizer 定制一次，对所有厂商生效。流式则一定在 <code>Flux</code> 上再加一层总超时，
-          因为「读超时」管不到一个持续有数据、但永不结束的连接。
+          所以通过 Boot 的 customizer 定制一次，对所有厂商生效。流式则用 <code>take(Duration)</code> 或
+          <code>takeUntilOther(...)</code> 设总时长预算；<code>Flux.timeout(...)</code> 只测两次数据之间的空闲间隔，
+          管不到一个持续有数据、但永不结束的连接。
         </p>
         <div class="callout warn">
           <span class="ct">超时不是越小越好</span>

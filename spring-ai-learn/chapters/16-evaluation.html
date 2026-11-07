@@ -204,20 +204,33 @@
           </table>
         </div>
         <pre data-lang="java" data-file="eval/RetrievalEval.java">record Case(String question, Set&lt;String&gt; relevantIds) {}
-record Report(double recallAtK, double mrr, double hitRate) {}
+record Report(double recallAtK, double mrr, double hitRate, double refusalRate) {}
 
 Report evaluate(VectorStore store, List&lt;Case&gt; cases, int k) {
     double recall = 0;
     double mrr = 0;
     int hits = 0;
+    int positives = 0;
+    int negatives = 0;
+    int refusals = 0;
 
     for (Case c : cases) {
         List&lt;String&gt; ids = store.similaritySearch(
                         SearchRequest.builder().query(c.question()).topK(k).build())
                 .stream().map(Document::getId).toList();
 
+        // 「不该回答」的样本单独统计，不混进 recall / MRR 分母
+        if (c.relevantIds().isEmpty()) {
+            negatives++;
+            if (ids.isEmpty()) {
+                refusals++;
+            }
+            continue;
+        }
+
+        positives++;
         long found = ids.stream().filter(c.relevantIds()::contains).count();
-        recall += c.relevantIds().isEmpty() ? 1.0 : found / (double) c.relevantIds().size();
+        recall += found / (double) c.relevantIds().size();
 
         int first = java.util.stream.IntStream.range(0, ids.size())
                 .filter(i -&gt; c.relevantIds().contains(ids.get(i)))
@@ -228,12 +241,14 @@ Report evaluate(VectorStore store, List&lt;Case&gt; cases, int k) {
         }
     }
 
-    int n = cases.size();
-    return new Report(recall / n, mrr / n, hits / (double) n);
+    int n = positives;
+    int denominator = n == 0 ? 1 : n;
+    double refusalRate = negatives == 0 ? 0 : refusals / (double) negatives;
+    return new Report(recall / denominator, mrr / denominator, hits / (double) denominator, refusalRate);
 }</pre>
         <p>
-          对「不该回答」的样本（<code>relevantIds</code> 为空），命中任何文档都算失败；这类样本应该单独统计，
-          不要混进 MRR，否则分母没有意义。
+          对「不该回答」的样本（<code>relevantIds</code> 为空），只有一条文档都没召回才算通过；这类样本单独统计
+          <code>refusalRate</code>，不要混进 recall / MRR 的分母，否则指标会互相污染。
         </p>
         <div class="callout tip">
           <span class="ct">先跑一次基线，再谈阈值</span>
@@ -377,7 +392,8 @@ assertThat(result.isPass()).isTrue();</pre>
             return response;
         }
         if (attempt &gt; maxRepeatAttempts) {
-            throw new IllegalStateException("评分未达标：" + evaluation.feedback());
+            logger.warn("评分未达标，返回最后一次响应：{}", evaluation.feedback());
+            return response;
         }
 
         // 把反馈拼回请求，重新走一遍后面的链

@@ -148,7 +148,8 @@ System.out.println(service.chat("user-99", "我刚才说我叫什么？")); // �
           <li>
             <span class="sh">② 系统消息永远不参与淘汰</span>
             <div>
-              计算要删多少条时，只统计非 system 消息；即使窗口满了，system 消息也会保留。
+              计算要删多少条时按<strong>消息总数</strong>算；但真正被移除的候选只包含非 system 消息。
+              即使窗口满了，system 消息也会保留（除非 system 消息自己就超过上限）。
               <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/memory/MessageWindowChatMemory.java:101">MessageWindowChatMemory.java:101</span>
             </div>
           </li>
@@ -214,15 +215,15 @@ this.chatMemory.add(conversationId, userMessage);   // 先写 user
 this.chatMemory.add(this.getConversationId(response.context()), assistantMessages);</pre>
         <p class="src-line">
           默认 order<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/api/Advisor.java:39">Advisor.java:39</span>；
-          before 与去重<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/MessageChatMemoryAdvisor.java:78">MessageChatMemoryAdvisor.java:78</span>；
+          before 与去重<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/MessageChatMemoryAdvisor.java:78">MessageChatMemoryAdvisor.java:78</span><span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/MessageChatMemoryAdvisor.java:83">MessageChatMemoryAdvisor.java:83</span>；
           after 写回<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/MessageChatMemoryAdvisor.java:137">MessageChatMemoryAdvisor.java:137</span>。
         </p>
         <div class="callout warn">
           <span class="ct">这个顺序带来一个副作用</span>
           <p>
             user 消息在<strong>调用模型之前</strong>就已经写进记忆。如果这次模型调用失败（超时、限流、401），
-            记忆里会留下一条没有回答的提问；客户端重试时会再写一条，形成重复。生产环境要在重试前用
-            <code>clear()</code> 或自己做幂等，别让失败请求污染上下文。
+            记忆里会留下一条没有回答的提问；客户端重试时会再写一条，形成重复。生产环境别用 <code>clear()</code>
+            （它会删掉整个会话），而是只移除失败的那条 user 消息、用请求幂等，或换一个新的 conversationId。
           </p>
         </div>
 
@@ -371,7 +372,7 @@ this.chatMemory.add(this.getConversationId(response.context()), assistantMessage
           </table>
         </div>
         <p class="src-line">
-          改动说明<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:54">upgrade-notes.adoc:54</span>；
+          改动说明<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:54">upgrade-notes.adoc:54</span><span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:55">upgrade-notes.adoc:55</span>；
           配置项与默认值<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/api/chat-memory.adoc:556">chat-memory.adoc:556</span>。
         </p>
 

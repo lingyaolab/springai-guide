@@ -157,11 +157,10 @@ class IngestService {
     }
 
     int ingest(String sourceName, String text) {
-        // 用内容哈希做文档 id：同一份文档重复导入时覆盖而不是追加
-        String id = DigestUtils.md5DigestAsHex(text.getBytes(StandardCharsets.UTF_8));
+        // 内容哈希本身只在切分前有效；切分后每个 chunk 会拿到随机 id
+        String hash = DigestUtils.md5DigestAsHex(text.getBytes(StandardCharsets.UTF_8));
 
         Document document = Document.builder()
-                .id(id)
                 .text(text)
                 .metadata(Map.of(
                         "source", sourceName,
@@ -169,13 +168,22 @@ class IngestService {
                         "version", 1))
                 .build();
 
-        var chunks = TokenTextSplitter.builder().build().apply(List.of(document));
-        this.vectorStore.add(chunks);
-        return chunks.size();
+        List&lt;Document&gt; chunks = TokenTextSplitter.builder().build().apply(List.of(document));
+        // 切分后按「内容哈希 + 分片序号」重建 id，重跑才会覆盖同一批分片
+        List&lt;Document&gt; withIds = IntStream.range(0, chunks.size())
+                .mapToObj(i -&gt; Document.builder()
+                        .id(hash + "-" + i)
+                        .text(chunks.get(i).getText())
+                        .metadata(chunks.get(i).getMetadata())
+                        .build())
+                .toList();
+        this.vectorStore.add(withIds);
+        return withIds.size();
     }
 }</pre>
         <p>
-          三个细节：① id 由内容决定，重跑不会产生重复；② metadata 记录来源与 embedding 模型，方便引用与迁移；
+          三个细节：① <code>TokenTextSplitter</code> 会给每个 chunk 生成随机 id，所以要在切分<strong>之后</strong>
+          用「内容哈希 + 分片序号」重建，重跑才不会追加重复；② metadata 记录来源与 embedding 模型，方便引用与迁移；
           ③ 切分放在入库时做，查询时只负责检索。
         </p>
 
@@ -186,7 +194,8 @@ class ChatConfig {
     @Bean
     ChatClient chatClient(ChatClient.Builder builder,
                           ChatMemory chatMemory,
-                          VectorStore vectorStore) {
+                          VectorStore vectorStore,
+                          OrderTools orderTools) {
 
         var memory = MessageChatMemoryAdvisor.builder(chatMemory).build();
 
@@ -204,15 +213,16 @@ class ChatConfig {
                         回答控制在 200 字以内，并在末尾列出引用的来源文件名。
                         """)
                 .defaultAdvisors(memory, rag)
-                .defaultTools(new OrderTools())
+                .defaultTools(orderTools)
                 .build();
     }
 }</pre>
         <div class="callout">
           <span class="ct">order 提醒</span>
           <p>
-            记忆在 <code>MIN+200</code>、工具在 <code>MIN+300</code>、RAG 在 <code>0</code>。所以一次带工具的问答里，
-            RAG 会在工具循环的每一轮重新检索。若不想这样，把 RAG 的 order 调到小于 <code>MIN+300</code>。
+            记忆在 <code>MIN+200</code>、工具在 <code>MIN+300</code>、RAG 在 <code>0</code>。order 越小越靠外，
+            所以 RAG 位于工具循环<strong>外侧</strong>，一次请求只检索一次。若想让每轮工具调用都重新检索，
+            把 RAG 的 order 调到 <code>HIGHEST_PRECEDENCE + 300</code> 以上（进入工具循环内侧）。
           </p>
         </div>
 
@@ -267,7 +277,7 @@ class ChatController {
                 .toolContext(Map.of("userId", request.userId()))
                 .stream()
                 .content()
-                .timeout(Duration.ofSeconds(90))
+                .take(Duration.ofSeconds(90))
                 .subscribe(
                         chunk -&gt; send(emitter, "delta", chunk),
                         error -&gt; {

@@ -222,8 +222,10 @@ public SseEmitter stream(@RequestParam String q) {
           <li>
             <span class="sh">④ 超时</span>
             <div>
-              <code>flux.timeout(Duration.ofSeconds(60))</code> 是<strong>总时长</strong>，不是首字节超时。
-              想要首字节超时，用 <code>timeout(Duration, Mono.fromRunnable(...))</code> 或把连接超时设在 HTTP 客户端上。
+              <code>flux.timeout(Duration.ofSeconds(60))</code> 是<strong>空闲/间隔超时</strong>：每来一个 chunk 就重置，
+              既不是总时长，也不是首字节超时。总时长用 <code>take(Duration)</code> 或
+              <code>takeUntilOther(Mono.delay(...))</code>；首字节用 <code>timeout(Mono.delay(...))</code>
+              这个接收 <code>Publisher</code> 的重载，或把连接超时设在 HTTP 客户端上。
             </div>
           </li>
         </div>
@@ -231,7 +233,7 @@ public SseEmitter stream(@RequestParam String q) {
         .user(q)
         .stream()
         .content()
-        .timeout(Duration.ofSeconds(90))
+        .take(Duration.ofSeconds(90))
         .doOnCancel(() -&gt; log.info("客户端断开，生成已取消"))
         .doOnComplete(() -&gt; log.info("生成完成"));</pre>
         <p class="src-line">
@@ -361,8 +363,12 @@ public SseEmitter stream(@RequestParam String q) {
                 <td><code>SseEmitter(0L)</code> + <code>subscribe</code> + <code>onCompletion/onTimeout</code></td>
               </tr>
               <tr>
-                <td>总超时</td>
-                <td><code>.timeout(Duration.ofSeconds(90))</code></td>
+                <td>总时长预算</td>
+                <td><code>.take(Duration.ofSeconds(90))</code></td>
+              </tr>
+              <tr>
+                <td>空闲超时</td>
+                <td><code>.timeout(Duration.ofSeconds(30))</code></td>
               </tr>
               <tr>
                 <td>取消时清理</td>

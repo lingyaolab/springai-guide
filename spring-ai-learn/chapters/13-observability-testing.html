@@ -78,7 +78,7 @@
             <tbody>
               <tr>
                 <td>ChatClient</td>
-                <td><code>gen_ai.client.operation</code></td>
+                <td><code>spring.ai.chat.client</code></td>
                 <td>整次对话耗时、用了哪些 Advisor</td>
               </tr>
               <tr>
@@ -88,7 +88,7 @@
               </tr>
               <tr>
                 <td>ChatModel</td>
-                <td>模型名、请求参数、token 用量、finish reason</td>
+                <td><code>gen_ai.client.operation</code>；模型名、请求参数、token 用量、finish reason</td>
                 <td>是模型慢还是网络慢</td>
               </tr>
               <tr>
@@ -103,7 +103,7 @@
               </tr>
               <tr>
                 <td>Tool Calling</td>
-                <td>工具名、参数、结果状态</td>
+                <td>工具名、调用 id、类型；参数与结果默认不采集，需设 <code>spring.ai.tools.observations.include-content=true</code></td>
                 <td>模型到底调了哪个工具</td>
               </tr>
             </tbody>
@@ -157,7 +157,7 @@
           </table>
         </div>
         <p class="src-line">
-          指标与属性清单<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/observability/index.adoc:93">observability/index.adoc:93</span>。
+          指标与属性清单<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/observability/index.adoc:100">observability/index.adoc:100</span>。
         </p>
         <div class="callout warn">
           <span class="ct">高基数标签会把监控系统拖垮</span>
@@ -328,8 +328,8 @@ void 工具能按城市返回结果() {
 }</pre>
         <pre data-lang="java" data-file="检索断言">VectorStore store = SimpleVectorStore.builder(new StubEmbeddingModel()).build();
 store.add(List.of(
-        new Document("refund", "退款政策：7 天无理由"),
-        new Document("shipping", "运费规则：满 99 包邮")));
+        new Document("refund", "退款政策：7 天无理由", Map.of()),
+        new Document("shipping", "运费规则：满 99 包邮", Map.of())));
 
 List&lt;Document&gt; hits = store.similaritySearch(
         SearchRequest.builder().query("退款怎么处理").topK(1).build());

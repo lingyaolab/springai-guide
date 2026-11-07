@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="00A ChatClient 信息流实验室：用可播放的分步演示看清 Spring AI 2.0.2 里一次 call() 从用户输入、Prompt、Advisor 链、ChatModel、工具循环到 ResponseSpec 的每一步输入输出，并扩展到记忆、RAG、观测与生产化外围。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="00A ChatClient 信息流实验室：一次调用怎么走完 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="可播放的分步演示：从最小 call() 到工程化与生产化外围。" />
+    <title>00A ChatClient 信息流实验室：一次调用怎么走完 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/flow-demo.css" />
+  </head>
+  <body data-page="00a-chatclient-flow" data-root="..">
+    <main>
+      <article class="article">
+        <h1>00A · ChatClient 信息流实验室</h1>
+        <p class="lede">
+          读源码最容易断片的地方，是「这一步的输出到底交给了谁」。这一页把 Spring AI 的一次调用拆成可播放的节点：
+          从用户输入进入，到 Prompt、Advisor 链、ChatModel、工具循环、ResponseSpec，再到记忆、RAG、观测与生产化外围。
+        </p>
+
+        <h2 id="goals">这一页怎么用</h2>
+        <ul class="goals">
+          <li>用 L1 最小场景看清 9 个基础节点，以及每个节点吐出什么</li>
+          <li>用 L2 工程化场景看新增的 5 个节点：记忆、RAG、结构化输出、观测、流式</li>
+          <li>用 L3 生产化场景看再加的 8 个外围节点，以及它们接在入口、工具面还是发布流程</li>
+          <li>用「上一节 / 下一节 / 播放」把信息流走一遍，而不是只看静态图</li>
+          <li>每一步都能点回对应章节与源码入口</li>
+        </ul>
+
+        <h2 id="demo">信息流实验室</h2>
+        <div class="fd" id="fd">
+          <div class="fd-top">
+            <div class="fd-brand"><span class="fd-pulse" aria-hidden="true"></span><span>CHATCLIENT TRACE</span><span class="fd-level" id="fd-level">L1</span></div>
+            <div class="fd-modes" role="group" aria-label="选择演示场景">
+              <button type="button" class="fd-mode" data-scenario="minimal" aria-pressed="true">L1 最小</button>
+              <button type="button" class="fd-mode" data-scenario="service" aria-pressed="false">L2 工程化</button>
+              <button type="button" class="fd-mode" data-scenario="production" aria-pressed="false">L3 生产化</button>
+            </div>
+            <div class="fd-controls">
+              <button type="button" id="fd-prev">← 上一节</button>
+              <button type="button" id="fd-play" aria-pressed="false">▶ 播放</button>
+              <button type="button" id="fd-next">下一节 →</button>
+              <button type="button" id="fd-reset">重置</button>
+            </div>
+          </div>
+
+          <p class="fd-blurb" id="fd-blurb"></p>
+
+          <div class="fd-grid">
+            <div class="fd-canvas">
+              <div class="fd-canvas-head">
+                <span id="fd-scenario-label">MINIMAL CALL</span>
+                <span class="fd-counter" id="fd-counter">01 / 09</span>
+              </div>
+              <div class="fd-rail-wrap">
+                <div class="fd-track-line" aria-hidden="true"></div>
+                <div class="fd-rail" id="fd-rail" aria-label="信息流节点"></div>
+                <span class="fd-packet" id="fd-packet" aria-hidden="true"></span>
+              </div>
+              <div class="fd-timeline" aria-hidden="true"><i id="fd-bar"></i></div>
+            </div>
+
+            <aside class="fd-panel" aria-live="polite">
+              <div class="fd-step" id="fd-step"></div>
+              <div class="fd-title" id="fd-title" role="status"></div>
+              <dl class="fd-detail">
+                <dt>输入</dt><dd id="fd-input"></dd>
+                <dt>输出</dt><dd id="fd-output"></dd>
+                <dt>交给谁</dt><dd id="fd-next-node"></dd>
+              </dl>
+              <div class="fd-json-wrap">
+                <div class="fd-json-head">payload.json <span>live</span></div>
+                <pre class="fd-json" id="fd-json" data-no-copy></pre>
+              </div>
+              <div class="fd-events" id="fd-events" aria-label="事件轨迹"></div>
+              <p class="fd-link" id="fd-link"></p>
+            </aside>
+          </div>
+        </div>
+        <p class="footnote">
+          节点按执行顺序排成网格；播放会每 1.4 秒前进一格，到末尾自动停止。
+          在 <code>prefers-reduced-motion</code> 下，高亮仍会切换，但不会平滑滚动或扫光。
+        </p>
+        <div class="callout tip">
+          <span class="ct">三档是叠加关系，不是三条独立链路</span>
+          <p>
+            <strong>L1 基础 9 个节点</strong> → <strong>L2 保留 L1 再加 5 个（共 14）</strong> →
+            <strong>L3 保留 L2 再加 8 个（共 22）</strong>。节点右上角的 <code>+L2</code> / <code>+L3</code>
+            就是本层新增的那一批。
+          </p>
+        </div>
+
+        <h2 id="minimal">最小链路：一次 call() 的 9 个节点</h2>
+        <p>
+          L1 只有 9 个节点：用户输入组装成 Prompt，Advisor 链排序后调用 ChatModel；
+          模型要工具就执行工具再推理，最后统一从 ResponseSpec 取结果。这条链路里没有记忆、RAG、观测与 SSE。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>节点</th><th>它做什么</th><th>输出给谁</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>UserInput</code></td><td>把问题与模板变量交给 <code>ChatClient.prompt()</code></td><td><code>Prompt</code></td></tr>
+              <tr><td><code>Prompt</code></td><td>拼 system / user 消息与运行时 <code>ChatOptions</code></td><td><code>AdvisorChain</code></td></tr>
+              <tr><td><code>AdvisorChain</code></td><td>按 order 排序，越小越靠外</td><td><code>ChatModel</code></td></tr>
+              <tr><td><code>ChatModel</code></td><td>第一次推理，可能产出 <code>tool_calls</code></td><td><code>ToolCallingAdvisor</code></td></tr>
+              <tr><td><code>ToolCallingAdvisor</code></td><td>检测工具调用；没有工具就直接返回</td><td><code>ToolCallback</code></td></tr>
+              <tr><td><code>ToolCallback</code></td><td>执行 Java 方法，产出 <code>ToolResponseMessage</code></td><td>下一轮上下文</td></tr>
+              <tr><td><code>ChatModel 2</code></td><td>带着工具结果再次推理</td><td><code>ResponseSpec</code></td></tr>
+              <tr><td><code>ResponseSpec</code></td><td>统一收口：<code>content()</code> / <code>entity()</code> / <code>chatResponse()</code></td><td>调用方</td></tr>
+              <tr><td><code>Output</code></td><td>返回字符串、实体、<code>ChatResponse</code> 或 SSE 帧</td><td>Controller / 前端</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="service">工程化：加的 5 个节点</h2>
+        <p>
+          L2 不是另起一条链路：它在 L1 的 9 个节点上新增 5 个，共 14 个。
+          新增的是 <strong>ChatMemory、RAG、StructuredOutput、Observation、Streaming</strong>。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>L2 的层</th><th>插在哪</th><th>它改变什么</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>ChatMemory <span class="tag">+L2</span></td><td>Advisor 链入口</td><td>按 conversationId 注入历史，再把新一轮写回</td></tr>
+              <tr><td>RAG <span class="tag">+L2</span></td><td>ChatModel 之前</td><td>检索上下文替换最后一条 user 消息</td></tr>
+              <tr><td>StructuredOutput <span class="tag">+L2</span></td><td>ResponseSpec 之前</td><td>JSON 转实体；校验失败可重试</td></tr>
+              <tr><td>Observation <span class="tag">+L2</span></td><td>整条链旁路</td><td>ChatClient / ChatModel / Tool 的 trace 与 metric</td></tr>
+              <tr><td>Streaming <span class="tag">+L2</span></td><td>ResponseSpec 之后</td><td><code>Flux</code> 增量输出，可接 SSE</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="production">生产化：再加 8 个外围节点</h2>
+        <p>
+          L3 在 L2 的 14 个节点上再加 8 个，共 22 个：
+          Auth、Gateway、Retry、ModelRouter、MCP Client、MCP Server、Evaluation、Deploy。
+          注意它们不是都塞进模型循环：Auth / Gateway 在入口，MCP Client / Server 在工具面，
+          Evaluation 在发布前，Deploy 在运行环境。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>外围设施</th><th>接在哪</th><th>对信息流的影响</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Auth</td><td>入站之前</td><td>把请求变成可信的用户与租户上下文</td></tr>
+              <tr><td>Gateway / 限流</td><td>入站之后</td><td>路由、配额与并发保护</td></tr>
+              <tr><td>Retry</td><td>模型调用外</td><td>对限流与网络错误退避重试</td></tr>
+              <tr><td>ModelRouter</td><td>ChatModel 之前</td><td>按任务、成本与可用性选模型</td></tr>
+              <tr><td>MCP Client</td><td>工具面</td><td>把远端 MCP 工具变成 <code>ToolCallback</code></td></tr>
+              <tr><td>MCP Server</td><td>能力出口</td><td>把自己的 <code>@McpTool</code> 暴露给其他 Agent</td></tr>
+              <tr><td>Evaluation</td><td>发布门禁</td><td>回归集与 judge 模型给出通过率</td></tr>
+              <tr><td>Deploy</td><td>运行环境</td><td>容器、密钥、监控与回滚</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="truth">每一步的出处</h2>
+        <p>
+          这张实验室不是另写一套流程，而是把正文里的调用链压缩成节点。入口与契约可以按下面几处回查：
+        </p>
+        <ul class="goals">
+          <li><code>ChatClient.prompt()</code> 入口：<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:128">ChatClient.java:128</span></li>
+          <li><code>call()</code> 与 <code>stream()</code>：<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:490">ChatClient.java:490</span> / <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/ChatClient.java:492">ChatClient.java:492</span></li>
+          <li>默认实现 <code>DefaultChatClient</code>：<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/DefaultChatClient.java:90">DefaultChatClient.java:90</span></li>
+          <li>工具循环 order：<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/ToolCallingAdvisor.java:75">ToolCallingAdvisor.java:75</span></li>
+          <li>记忆先写 user：<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/MessageChatMemoryAdvisor.java:104">MessageChatMemoryAdvisor.java:104</span></li>
+          <li>RAG 取最后一条 user 消息：<span class="src" data-src="advisors/spring-ai-vector-store-advisor/src/main/java/org/springframework/ai/chat/client/advisor/vectorstore/QuestionAnswerAdvisor.java:112">QuestionAnswerAdvisor.java:112</span></li>
+          <li>JSON 转换关闭未知字段失败：<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/converter/BeanOutputConverter.java:204">BeanOutputConverter.java:204</span></li>
+          <li>结构化输出校验 Advisor 的 order：<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/StructuredOutputValidationAdvisor.java:243">StructuredOutputValidationAdvisor.java:243</span></li>
+          <li>ChatClient 观测名：<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/observation/DefaultChatClientObservationConvention.java:41">DefaultChatClientObservationConvention.java:41</span></li>
+          <li>ChatModel 观测名：<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/observation/DefaultChatModelObservationConvention.java:40">DefaultChatModelObservationConvention.java:40</span></li>
+          <li>MCP 客户端配置前缀：<span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-client-common/src/main/java/org/springframework/ai/mcp/client/common/autoconfigure/properties/McpClientCommonProperties.java:34">McpClientCommonProperties.java:34</span></li>
+          <li>MCP 服务端注解扫描：<span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-server-common/src/main/java/org/springframework/ai/mcp/server/common/autoconfigure/annotations/McpServerAnnotationScannerAutoConfiguration.java:54">McpServerAnnotationScannerAutoConfiguration.java:54</span></li>
+          <li>4xx 归类为不可重试：<span class="src" data-src="spring-ai-retry/src/main/java/org/springframework/ai/retry/RetryUtils.java:89">RetryUtils.java:89</span></li>
+        </ul>
+
+        <h2 id="next">继续读什么</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>接着看什么</th><th>为什么是它</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><a href="02-chatclient.html">02 ChatClient</a></td><td>最小链路真正跑起来</td></tr>
+              <tr><td><a href="03-prompt-structured-output.html">03 提示词与结构化输出</a></td><td>Prompt 与实体转换的细节</td></tr>
+              <tr><td><a href="05-chat-memory.html">05 多轮记忆</a></td><td>ChatMemory 在链上的位置与写入时机</td></tr>
+              <tr><td><a href="06-advisors.html">06 Advisor 机制</a></td><td>order、before/after 与 per-call 参数</td></tr>
+              <tr><td><a href="10-tool-calling.html">10 Tool Calling</a></td><td>从 <code>tool_calls</code> 到 <code>ToolResponseMessage</code></td></tr>
+              <tr><td><a href="14-production.html">14 生产化</a></td><td>把 L3 的外围设施接起来</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+    <script src="../assets/flow-demo.js"></script>
+  </body>
+</html>

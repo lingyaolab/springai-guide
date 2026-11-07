@@ -123,8 +123,9 @@
           </p>
         </div>
         <p>
-          order 相同的 Advisor，按注册顺序执行（排序是稳定的）。所以不要依赖「都是 0 时谁先谁后」这种巧合——
-          需要确定的顺序就显式给不同的值。
+          order 相同的 Advisor，执行顺序<strong>不保证</strong>（官方明确说 unspecified）。当前实现会先
+          <code>addFirst</code> 再稳定排序，实际顺序与注册顺序相反。所以不要依赖「都是 0 时谁先谁后」这种巧合——
+          需要确定的顺序就显式给不同的值。<span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/api/advisors.adoc:79">advisors.adoc:79</span>
         </p>
 
         <h2 id="base">BaseAdvisor：before / after 的默认骨架</h2>
@@ -237,7 +238,7 @@ public class AuditAdvisor implements BaseAdvisor {
           <p>
             流式的 <code>before</code> 与 <code>after</code> 可能跑在 <code>boundedElastic</code> 的不同线程上。
             示例为了简洁用了 <code>ThreadLocal</code>，生产代码应该把开始时间放进
-            <code>request.context()</code>（不可变 Map，随响应带回来），或直接用 Observation / Micrometer。
+            <code>request.context()</code>（一个可变的 Map 快照，沿链共享），或直接用 Observation / Micrometer。
           </p>
         </div>
 
@@ -264,7 +265,7 @@ public class AuditAdvisor implements BaseAdvisor {
               </tr>
               <tr>
                 <td><code>advisors(Consumer&lt;AdvisorSpec&gt;)</code></td>
-                <td>设置参数而不是加 Advisor</td>
+                <td>既可加 Advisor（<code>a.advisors(...)</code>），也可设置参数</td>
                 <td><code>.advisors(a -&gt; a.param("k", v))</code></td>
               </tr>
             </tbody>

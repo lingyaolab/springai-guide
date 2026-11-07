@@ -59,7 +59,7 @@
             <div class="ld">
               一个只有 <code>dependencyManagement</code> 的 POM，声明这一版 Spring AI 全家桶用哪些版本。
               它<strong>不引入任何代码</strong>，只让你在写依赖时省掉 <code>&lt;version&gt;</code>。
-              <span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/getting-started.adoc:146">getting-started.adoc:146</span>
+              <span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/getting-started.adoc:131">getting-started.adoc:131</span>
             </div>
           </div>
           <div class="layer in2">
@@ -69,6 +69,7 @@
               <code>spring-boot-starter-restclient</code>、DeepSeek 自动装配、DeepSeek 实现、ChatClient、ChatMemory。
               <span class="src" data-src="starters/spring-ai-starter-model-deepseek/pom.xml:20">starter/pom.xml:20</span>
               <span class="src" data-src="starters/spring-ai-starter-model-deepseek/pom.xml:30">starter/pom.xml:30</span>
+              <span class="src" data-src="starters/spring-ai-starter-model-deepseek/pom.xml:36">starter/pom.xml:36</span>
               <span class="src" data-src="starters/spring-ai-starter-model-deepseek/pom.xml:42">starter/pom.xml:42</span>
               <span class="src" data-src="starters/spring-ai-starter-model-deepseek/pom.xml:54">starter/pom.xml:54</span>
             </div>
@@ -239,7 +240,7 @@ RAG（检索增强生成）是……
               <tr>
                 <td><code>spring.ai.deepseek.api-key</code></td>
                 <td>属性名来自 <code>setApiKey()</code> 的宽松绑定</td>
-                <td>写成 <code>spring.ai.deepseek.chat.api-key</code> 不生效——chat 前缀下没有这个属性</td>
+                <td><code>spring.ai.deepseek.chat.api-key</code> 也有效，并会覆盖 <code>spring.ai.deepseek.api-key</code>；两者都没有时启动才断言失败
               </tr>
               <tr>
                 <td><code>chat.model: deepseek-v4-flash</code></td>
@@ -283,7 +284,8 @@ RAG（检索增强生成）是……
           <li>
             <span class="sh">③ 建 API 客户端</span>
             <div>
-              解析 <code>base-url</code> 与 <code>api-key</code>，缺任何一个都会在启动时断言失败；然后创建一个
+              解析 <code>base-url</code> 与 <code>api-key</code>：<code>base-url</code> 有默认值
+              <code>https://api.deepseek.com</code>，只有 <code>api-key</code> 缺失才会在启动时断言失败；然后创建一个
               <code>RestClient</code>（同步）和一个 <code>WebClient</code>（流式）。
               <span class="src" data-src="auto-configurations/models/spring-ai-autoconfigure-model-deepseek/src/main/java/org/springframework/ai/model/deepseek/autoconfigure/DeepSeekChatAutoConfiguration.java:88">DeepSeekChatAutoConfiguration.java:88</span>
             </div>
@@ -437,11 +439,11 @@ RAG（检索增强生成）是……
           </p>
         </div>
         <div class="callout warn">
-          <span class="ct">你会看到配置没生效：抄了 <code>spring.ai.deepseek.chat.options.model</code></span>
+          <span class="ct">仍兼容但已弃用：<code>spring.ai.deepseek.chat.options.model</code></span>
           <p>
             <strong>因为</strong>2.0.0 起所有模型的 <code>.options</code> 层级被拍平了：原来的
-            <code>xxx.options.model</code> 现在是 <code>xxx.model</code>。旧写法还留着兼容，但
-            <code>getOptions()</code> 与嵌套 <code>Options</code> 类都已标记弃用，2.x 后续版本会删。
+            <code>xxx.options.model</code> 现在是 <code>xxx.model</code>。旧写法仍会绑定并生效（可能伴随弃用警告），
+            但 <code>getOptions()</code> 与嵌套 <code>Options</code> 类都已标记弃用，2.x 后续版本会删。
             <strong>改成</strong>去掉 <code>.options</code> 这一段。
             <span class="src" data-src="spring-ai-docs/src/main/antora/modules/ROOT/pages/upgrade-notes.adoc:830">upgrade-notes.adoc:830</span>
           </p>
@@ -453,7 +455,7 @@ RAG（检索增强生成）是……
             <code>deepseek-chat</code>（指向 V3）与 <code>deepseek-reasoner</code> 标记为
             <code>@Deprecated(since = "2.0.0")</code>。<strong>建议</strong>新项目直接用
             <code>deepseek-v4-flash</code>，需要更强推理时切 <code>deepseek-v4-pro</code>。
-            <span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/api/DeepSeekApi.java:238">DeepSeekApi.java:238</span>
+            <span class="src" data-src="models/spring-ai-deepseek/src/main/java/org/springframework/ai/deepseek/api/DeepSeekApi.java:253">DeepSeekApi.java:253</span>
           </p>
         </div>
         <div class="callout warn">

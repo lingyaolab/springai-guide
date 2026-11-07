@@ -257,10 +257,10 @@ class AskController {
         <h2 id="advisor">QuestionAnswerAdvisor：一个 Advisor 就是整条在线链路</h2>
         <p>它的 <code>before()</code> 只做四件事：</p>
         <ol>
-          <li>从上下文取用户问题（如果没有，就用提示词的最后一条 user 消息）；</li>
+          <li>从提示词的最后一条 user 消息取问题（没有则为空字符串）；</li>
           <li>用当前 <code>SearchRequest</code> 调 <code>vectorStore.similaritySearch(...)</code>；</li>
           <li>把检索到的文档拼成 <code>{question_answer_context}</code>；</li>
-          <li>套进默认模板，<strong>追加到用户消息</strong>，再交给后面的链路。</li>
+          <li>套进默认模板，<strong>替换最后一条 user 消息的文本</strong>（原问题已渲染进模板），再交给后面的链路。</li>
         </ol>
         <p>默认模板长这样（原文）：</p>
         <pre data-lang="text" data-file="QuestionAnswerAdvisor 的默认模板">{query}
@@ -275,8 +275,9 @@ Given the context and provided history information and not prior knowledge,
 reply to the user comment. If the answer is not in the context, inform
 the user that you can't answer the question.</pre>
         <p>
-          注意最后一句：它明确要求「上下文里没有就说不知道」。这比你自己写「不要编造」有效得多——因为它是系统级的
-          指令，且紧贴上下文。想换成中文或调整语气，用 <code>.promptTemplate(...)</code> 覆盖。
+          注意最后一句：它明确要求「上下文里没有就说不知道」。这比你自己写「不要编造」有效得多——因为它不是
+          system 消息，而是把检索上下文与约束一起塞进最后一条 user 消息；想换成中文或调整语气，用
+          <code>.promptTemplate(...)</code> 覆盖。
         </p>
         <p class="src-line">
           默认模板<span class="src" data-src="advisors/spring-ai-vector-store-advisor/src/main/java/org/springframework/ai/chat/client/advisor/vectorstore/QuestionAnswerAdvisor.java:61">QuestionAnswerAdvisor.java:61</span>；

@@ -73,11 +73,10 @@
         <p>
           但拼接字符串容易出注入与转义问题。更稳的是用 <code>FilterExpressionBuilder</code> 构造：
         </p>
-        <pre data-lang="java" data-file="按租户与版本过滤">Filter.Expression filter = new FilterExpressionBuilder()
-        .and(
-                new FilterExpressionBuilder().eq("tenant", tenantId).build(),
-                new FilterExpressionBuilder().gte("version", 2).build())
-        .build();
+        <pre data-lang="java" data-file="按租户与版本过滤">FilterExpressionBuilder b = new FilterExpressionBuilder();
+Filter.Expression filter = b.and(
+        b.eq("tenant", tenantId),
+        b.gte("version", 2)).build();
 
 List&lt;Document&gt; docs = vectorStore.similaritySearch(
         SearchRequest.builder().query(q).topK(4).filterExpression(filter).build());</pre>
@@ -104,7 +103,8 @@ List&lt;Document&gt; docs = vectorStore.similaritySearch(
 // 输入：「那退款呢？」（上文在聊运费）
 // 输出：「退款政策和退款流程是什么？」</pre>
         <p>
-          它的默认提示词里有一个 <code>{targetSearchSystem}</code>，默认值是 <code>"vector store"</code>，
+          它的默认提示词里有一个 <code>{target}</code>，构建器属性叫
+          <code>targetSearchSystem</code>，默认值是 <code>"vector store"</code>，
           意思是「按向量库检索的习惯来改写」。你可以换成自己的领域描述，让改写更贴近业务词汇。
         </p>
         <p class="src-line">
@@ -390,7 +390,7 @@ List&lt;Document&gt; used = (List&lt;Document&gt;) response.context().get(Retrie
         <div class="callout warn">
           <span class="ct">延迟从 1 秒涨到 5 秒</span>
           <p>
-            <strong>因为</strong>改写 + 多查询意味着 1 次改写调用 + 3 路检索 + 1 次回答。<strong>改成</strong>
+            <strong>因为</strong>改写 + 多查询意味着 1 次改写调用 + 4 路检索（3 个变体 + 原问题）+ 1 次回答。<strong>改成</strong>
             按场景裁剪链路，给每一步设超时，并把改写结果缓存（相同问题短时间内复用）。
           </p>
         </div>
@@ -411,7 +411,7 @@ List&lt;Document&gt; used = (List&lt;Document&gt;) response.context().get(Retrie
 
         <h2 id="next">下一步</h2>
         <p>
-          检索这条线到此收口。下一章「11 MCP 客户端」会把工具从「本地方法」扩展到「外部进程」，并讲清工具来源、
+          检索这条线到此收口。下一章「10 Tool Calling」会把工具从「本地方法」扩展到「外部进程」，并讲清工具来源、
           生命周期与安全边界的变化。
         </p>
       </article>

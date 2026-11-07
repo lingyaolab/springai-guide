@@ -14,9 +14,9 @@ spring-ai-learn/           站点本体（发布时把这个目录作为站点�
 ├── index.html             首页（学习进度、章节入口、更新记录）
 ├── 404.html               站内 404（自包含样式，任意深度可用）
 ├── robots.txt
-├── chapters/              第 00–16 章
+├── chapters/              第 00–16 章 + 00A 信息流实验室
 ├── appendix/              附录 A–E
-└── assets/                base.css / site.js / nav.js / search-index.js / favicon.svg
+└── assets/                base.css / site.js / nav.js / search-index.js / flow-demo.* / favicon.svg
 
 tools/                     零依赖 Node 脚本
 ├── check-site.cjs         静态检查（链接、锚点、nav 一致性、meta、发布物）

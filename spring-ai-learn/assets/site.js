@@ -390,7 +390,7 @@
         href: it.href,
         kind: "page",
         disabled: it.status !== "ready",
-        hay: (it.title + " " + it.desc + " " + (it.kw || []).join(" ")).toLowerCase(),
+        hay: (it.num + " " + it.title + " " + it.desc + " " + (it.kw || []).join(" ")).toLowerCase(),
       });
       if (it.status === "ready") {
         (it.sections || []).forEach(function (s) {
@@ -400,7 +400,7 @@
             href: it.href + "#" + s[0],
             kind: "sec",
             disabled: false,
-            hay: (s[1] + " " + it.title).toLowerCase(),
+            hay: (it.num + " " + s[1] + " " + it.title).toLowerCase(),
           });
         });
       }

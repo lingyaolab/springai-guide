@@ -55,7 +55,7 @@
             <span class="lt">注解 + 扫描器</span>
             <div class="ld">
               启动时扫描 <code>@McpTool</code> / <code>@McpResource</code> / <code>@McpPrompt</code>，生成 MCP 能力清单。
-              <span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-server-common/src/main/java/org/springframework/ai/mcp/server/common/autoconfigure/annotations/McpServerAnnotationScannerProperties.java:27">McpServerAnnotationScannerProperties.java:27</span>
+              <span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-server-common/src/main/java/org/springframework/ai/mcp/server/common/autoconfigure/annotations/McpServerAnnotationScannerAutoConfiguration.java:54">McpServerAnnotationScannerAutoConfiguration.java:54</span>
             </div>
           </div>
           <div class="layer in3">
@@ -76,7 +76,7 @@
             </thead>
             <tbody>
               <tr>
-                <td>Streamable HTTP（默认）</td>
+                <td>Streamable HTTP（需显式开启）</td>
                 <td><code>spring-ai-starter-mcp-server-webmvc</code> 或 <code>-webflux</code>，<code>protocol=STREAMABLE</code></td>
                 <td>对外提供 HTTP 服务，新版客户端</td>
               </tr>
@@ -192,7 +192,7 @@ String refundPolicy() {
 }
 
 @McpPrompt(name = "order-summary", description = "生成订单摘要")
-String orderSummary(@McpToolParam(description = "订单号") String orderNo) {
+String orderSummary(@McpArg(name = "orderNo", description = "订单号", required = true) String orderNo) {
     return "请总结订单 " + orderNo + " 的状态、金额与风险点。";
 }</pre>
         <div class="callout">
@@ -203,8 +203,9 @@ String orderSummary(@McpToolParam(description = "订单号") String orderNo) {
           </p>
         </div>
         <p>
-          <code>@McpTool</code> 还支持给客户端看的提示：<code>readOnlyHint</code>、<code>destructiveHint</code>、
-          <code>idempotentHint</code>。它们只是<strong>提示</strong>，不是强制约束，真正的权限仍要在服务端校验。
+          <code>@McpTool</code> 的提示参数放在嵌套注解里：
+          <code>@McpTool(annotations = @McpTool.McpAnnotations(readOnlyHint = true, destructiveHint = false, idempotentHint = true))</code>，
+          另外还有 <code>openWorldHint</code>。它们只是<strong>提示</strong>，不是强制约束，真正的权限仍要在服务端校验。
         </p>
 
         <h2 id="scan">注解扫描：为什么工具列表是空的</h2>
@@ -216,7 +217,7 @@ String orderSummary(@McpToolParam(description = "订单号") String orderNo) {
           <li>方法所在的类没有 <code>@Component</code> / <code>@Service</code>，没进容器；</li>
           <li>用了 <code>new</code> 创建对象，而不是注入；</li>
           <li>只引了 <code>spring-ai-starter-mcp-server</code>（stdio 版），却用 HTTP 客户端去连；</li>
-          <li>方法不是 <code>public</code>，或参数类型无法生成 schema。</li>
+          <li>参数类型无法生成 schema（非 <code>public</code> 方法会被 <code>setAccessible(true)</code> 后调用，不是原因）。</li>
         </ul>
         <p class="src-line">
           扫描开关<span class="src" data-src="auto-configurations/mcp/spring-ai-autoconfigure-mcp-server-common/src/main/java/org/springframework/ai/mcp/server/common/autoconfigure/annotations/McpServerAnnotationScannerProperties.java:29">McpServerAnnotationScannerProperties.java:29</span>。
@@ -250,7 +251,7 @@ String orderSummary(@McpToolParam(description = "订单号") String orderNo) {
               </tr>
               <tr>
                 <td><code>...server.protocol</code></td>
-                <td><code>STREAMABLE</code></td>
+                <td><code>STREAMABLE</code>（属性声明值；不配置时自动装配实际选 SSE）</td>
                 <td><code>SSE</code> / <code>STREAMABLE</code> / <code>STATELESS</code></td>
               </tr>
               <tr>
@@ -363,7 +364,7 @@ SecurityFilterChain mcpSecurity(HttpSecurity http) throws Exception {
           <span class="ct">Inspector 连上了，但工具列表为空</span>
           <p>
             <strong>因为</strong>方法所在的类不是 Bean，或引错 starter。<strong>改成</strong>确认类上有
-            <code>@Service</code>、方法 <code>public</code> 且参数能生成 schema；HTTP 场景必须用
+            <code>@Service</code>、参数能生成 schema；HTTP 场景必须用
             <code>-webmvc</code> / <code>-webflux</code> 的 starter。
           </p>
         </div>
@@ -384,8 +385,9 @@ SecurityFilterChain mcpSecurity(HttpSecurity http) throws Exception {
         <div class="callout warn">
           <span class="ct">老客户端连不上</span>
           <p>
-            <strong>因为</strong>默认协议是 Streamable HTTP，老客户端只会 SSE。<strong>改成</strong>临时设
-            <code>protocol=SSE</code>，并规划客户端升级。
+            <strong>因为</strong>你按示例显式设了 <code>protocol=STREAMABLE</code>，只支持 SSE 的老客户端连不上。
+            <strong>改成</strong>临时设 <code>protocol=SSE</code>，并规划客户端升级。
+            （注意：完全不配置该属性时，自动装配实际会走 SSE，而不是属性声明的 STREAMABLE。）
           </p>
         </div>
         <div class="callout warn">

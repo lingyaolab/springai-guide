@@ -125,7 +125,9 @@ private static final char DEFAULT_END_DELIMITER_TOKEN = '}';</pre>
         <p class="src-line">
           默认渲染器<span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/chat/prompt/PromptTemplate.java:51">PromptTemplate.java:51</span>，
           默认分隔符<span class="src" data-src="spring-ai-template-st/src/main/java/org/springframework/ai/template/st/StTemplateRenderer.java:63">StTemplateRenderer.java:63</span>。
-          system 与 user 各自独立渲染，只有传了 <code>param</code> 才会走模板替换<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/DefaultChatClientUtils.java:66">DefaultChatClientUtils.java:66</span>。
+          system 与 user 各自独立渲染，只有传了 <code>param</code> 才会走模板替换
+          <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/DefaultChatClientUtils.java:62">DefaultChatClientUtils.java:62</span>
+          <span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/DefaultChatClientUtils.java:84">DefaultChatClientUtils.java:84</span>。
         </p>
         <div class="callout warn">
           <span class="ct">最容易踩的坑：提示词里写了 JSON 示例</span>
@@ -184,7 +186,7 @@ private static final char DEFAULT_END_DELIMITER_TOKEN = '}';</pre>
             <span class="sh">⑤ Jackson 反序列化</span>
             <div>
               用 <code>JsonMapper</code> 转成目标类型；<code>FAIL_ON_UNKNOWN_PROPERTIES</code> 默认关闭，模型多返回字段不会炸。
-              <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/converter/BeanOutputConverter.java:203">BeanOutputConverter.java:203</span>
+              <span class="src" data-src="spring-ai-model/src/main/java/org/springframework/ai/converter/BeanOutputConverter.java:204">BeanOutputConverter.java:204</span>
             </div>
           </li>
         </div>
@@ -295,7 +297,7 @@ Here is the JSON Schema instance your output must adhere to:
               </tr>
               <tr>
                 <td>Advisor 顺序</td>
-                <td><code>LOWEST_PRECEDENCE - 2000</code>，保证它包在工具循环外层</td>
+                <td><code>LOWEST_PRECEDENCE - 2000</code>，位于工具循环<strong>内侧</strong>（order 越大越靠内），靠近 <code>ChatModelCallAdvisor</code></td>
               </tr>
               <tr>
                 <td>工具调用轮次</td>

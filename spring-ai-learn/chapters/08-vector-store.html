@@ -148,7 +148,8 @@
           <li>
             <span class="sh">③ 兜底 1536</span>
             <div>
-              拿不到维度时打 warn 并回退到 OpenAI 的默认维度。这个兜底很危险：模型是 384 维时，表会被建成 1536 维，
+              只有 <code>embeddingModel.dimensions()</code> 抛异常时才会打 warn 并回退到 OpenAI 的默认维度；
+              返回非正数时则静默落到同一个兜底值。这个兜底很危险：模型是 384 维时，表会被建成 1536 维，
               写入直接失败。
               <span class="src" data-src="vector-stores/spring-ai-pgvector-store/src/main/java/org/springframework/ai/vectorstore/pgvector/PgVectorStore.java:511">PgVectorStore.java:511</span>
             </div>
@@ -200,7 +201,7 @@
           是一起建的</strong>：改了度量，索引必须重建，否则查询用不上索引，退化成全表扫描。
         </p>
         <p class="src-line">
-          默认度量与索引类型<span class="src" data-src="auto-configurations/vector-stores/spring-ai-autoconfigure-vector-store-pgvector/src/main/java/org/springframework/ai/vectorstore/pgvector/autoconfigure/PgVectorStoreProperties.java:39">PgVectorStoreProperties.java:39</span>；
+          默认度量与索引类型<span class="src" data-src="auto-configurations/vector-stores/spring-ai-autoconfigure-vector-store-pgvector/src/main/java/org/springframework/ai/vectorstore/pgvector/autoconfigure/PgVectorStoreProperties.java:39">PgVectorStoreProperties.java:39</span><span class="src" data-src="auto-configurations/vector-stores/spring-ai-autoconfigure-vector-store-pgvector/src/main/java/org/springframework/ai/vectorstore/pgvector/autoconfigure/PgVectorStoreProperties.java:41">PgVectorStoreProperties.java:41</span>；
           建索引语句<span class="src" data-src="vector-stores/spring-ai-pgvector-store/src/main/java/org/springframework/ai/vectorstore/pgvector/PgVectorStore.java:454">PgVectorStore.java:454</span>。
         </p>
 

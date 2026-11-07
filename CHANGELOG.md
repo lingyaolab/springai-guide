@@ -2,6 +2,30 @@
 
 站点版本与所讲解的框架版本分开记：框架版本固定在 **Spring AI 2.0.2**，站点版本见下。
 
+## v1.2.0 — 2026-11-07
+
+对照 Spring AI 2.0.2 源码做全站复核，并补一个可播放的信息流实验室。
+
+- 原有 22 页 + 附录逐条回源，修正源码语义与页面表述不一致的地方：
+  - 01 / 02 / 03：`spring.ai.deepseek.chat.api-key` 有效并覆盖连接级 key；`.options.model` 仍兼容但已弃用；
+    `base-url` 有默认值；`entity` 是 6 个重载；结构化输出 Advisor 位于工具循环内侧；`call()` / `stream()`
+    与模板门控引用拆到准确行号。
+  - 04 / 05 / 06 / 07：`Flux.timeout` 是空闲超时，总时长用 `take(...)`；流式取消时 user 消息已写入记忆；
+    `MessageWindowChatMemory` 的裁剪数量按总数算；同 order Advisor 执行顺序不保证；`request.context()`
+    是可变快照；`QuestionAnswerAdvisor` 用最后一条 user 消息检索并替换其文本。
+  - 08 / 09 / 10 / 11：`FilterExpressionBuilder` 示例改为 `b.and(b.eq(...), b.gte(...))`；
+    `MethodToolCallbackProvider` 用 builder；多查询默认含原问题共 4 路；JDBC 记忆会过滤工具消息；
+    MCP stdio 前缀引用修正。
+  - 12 / 13 / 14 / 15 / 16：MCP 协议默认行为、`@McpTool` 提示注解、`@McpArg`、非 public 方法；
+    ChatClient 观测名；`Document` 构造器；`Flux` 总时长；capstone 切分后重建 id；评测中空
+    `relevantIds` 的统计口径；超时/重试引用。
+  - 附录 A–E：RAG Advisor order 方向、`ToolAdvisor` 自动注册跳过规则、Boot 4 与 BOM 同步升级、
+    `DefaultChatClient` 引用。
+- 新增 **00A ChatClient 信息流实验室**：L1 最小调用 9 节点、L2 工程化 14 节点、L3 生产化 22 节点，
+  可播放、可单步、可回跳章节，零依赖。
+- 搜索索引把章节编号纳入页面与小节的匹配文本，输入 `02`、`16` 可直接定位。
+- 出处总数更新为 313 条；`check-site` 与 `check-sources --strict` 全部通过。
+
 ## v1.1.2 — 2026-11-06
 
 修复 XML 代码块高亮把 `class="tk-k"` 渲染成可见文本的问题。
