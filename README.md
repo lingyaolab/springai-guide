@@ -5,6 +5,7 @@
 **内容状态**：第 00–16 章 + 00A 信息流实验室 + 附录 A–F，共 24 页，对应站点版本 v1.4.0。
 
 - **本地看站**：双击 [`spring-ai-learn/index.html`](spring-ai-learn/index.html)，或在仓库根执行 `python -m http.server 8080` 后访问 <http://localhost:8080/spring-ai-learn/>
+- **配套示例**：[`samples/`](samples/) 是可运行 Maven 工程，`mvn test` 离线通过，设置 `DEEPSEEK_API_KEY` 后 `mvn spring-boot:run` 走真实模型
 - **部署**：见 [DEPLOY.md](DEPLOY.md)（GitHub Pages / Vercel / Netlify / 自建服务器）
 - **更新记录**：见 [CHANGELOG.md](CHANGELOG.md)
 - **自检**：`node tools/check-site.cjs` 与 `node tools/check-sources.cjs`
