@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Spring AI 2.0.2 教程各章动手练习的参考实现与检查点：环境、ChatClient、结构化输出、流式、记忆、Advisor、RAG、向量库、检索、工具、MCP、观测、生产化、综合案例与评测。"
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="Spring AI 2.0.2 学习站" />
+    <meta property="og:title" content="F 动手练习答案：每章做完怎么对照 · Spring AI 2.0.2 学习站" />
+    <meta property="og:description" content="各章练习的参考实现与检查点。" />
+    <title>F 动手练习答案：每章做完怎么对照 · Spring AI 2.0.2 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="appendix-exercises" data-root="..">
+    <main>
+      <article class="article">
+        <h1>附录 F · 动手练习答案</h1>
+        <p class="lede">
+          这不是唯一答案，而是「参考实现 + 检查点」。同一道练习可以写出不同代码，
+          重点是你能不能解释每一步为什么这样做。建议先自己写，再对照。
+        </p>
+
+        <h2 id="how">怎么用这份答案</h2>
+        <ul class="goals">
+          <li>先跑通自己的版本，再对照参考实现，不要直接抄。</li>
+          <li>重点看「检查点」：它们比代码更能说明你有没有理解。</li>
+          <li>如果代码能跑但检查点答不上来，回到对应章节重读。</li>
+        </ul>
+
+        <h2 id="ch01-02">第 01–02 章：环境与 ChatClient</h2>
+        <p>
+          01 的三个观察可以放在同一个工程里做：先固定温度，再删 key 看启动失败，
+          最后用依赖树确认 starter 的来源。
+        </p>
+        <pre data-lang="yaml" data-file="稳定输出">spring:
+  ai:
+    deepseek:
+      chat:
+        temperature: 0</pre>
+        <pre data-lang="java" data-file="取 token 用量">ChatResponse response = chatClient.prompt()
+        .user("用一句话解释 RAG")
+        .call()
+        .chatResponse();
+
+var usage = response.getMetadata().getUsage();
+System.out.println(usage.getPromptTokens()
+        + " + " + usage.getCompletionTokens()
+        + " = " + usage.getTotalTokens());</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li><code>temperature=0</code> 只是降低随机性，不保证三次逐字相同；厂商侧批处理与版本变化仍会影响结果。</li>
+          <li>删掉 <code>api-key</code> 是<strong>启动时断言失败</strong>，不是请求时 401。先看启动日志第一段，不要先去查网络。</li>
+          <li><code>mvn dependency:tree</code> 里应能追到 <code>spring-ai-starter-model-deepseek</code> → 自动装配模块 → <code>spring-ai-deepseek</code>。</li>
+          <li>记忆隔离看的是 <code>conversationId</code>，不是 HTTP 会话；不同 id 互不可见，相同 id 才共享历史。</li>
+        </ul>
+
+        <h2 id="ch03-04">第 03–04 章：结构化输出与流式</h2>
+        <p>
+          嵌套 record 的 schema 会多一层 <code>$defs</code> / <code>properties</code>；
+          关键不是看 JSON 长什么样，而是看模型能否稳定填对嵌套字段。
+        </p>
+        <pre data-lang="java" data-file="嵌套结构">record Director(String name, int year) {}
+record Movie(String title, Director director) {}</pre>
+        <p>
+          流式练习建议同时记录两个时间：首字时间与总耗时。只看总耗时，会误判首字体验。
+        </p>
+        <pre data-lang="java" data-file="流式与取消">Disposable d = chatClient.prompt()
+        .user("写一段 500 字的说明")
+        .stream()
+        .content()
+        .doOnNext(System.out::print)
+        .doOnCancel(() -&gt; log.info("client cancelled"))
+        .subscribe();
+
+// 需要总时长上限时用 take；timeout 是空闲超时，不是总时长
+// .take(Duration.ofSeconds(30))</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li>JSON 示例直接写进 user 提示词会和模板占位符冲突；修法是把示例作为参数传入，或按模板规则转义花括号。</li>
+          <li><code>validateSchema()</code> 失败会触发重试；把 <code>year</code> 改成字符串后，应能看到重试日志而不是直接返回坏对象。</li>
+          <li><code>Flux.timeout</code> 约束的是「多久没有下一个元素」，长回答一直有 chunk 就不会触发；总时长用 <code>take(...)</code>。</li>
+          <li>关闭页面后，<code>doOnCancel</code> 应被调用；如果没有，检查响应式链路里是否有人把 <code>Flux</code> 转成了阻塞聚合。</li>
+        </ul>
+
+        <h2 id="ch05-06">第 05–06 章：记忆与 Advisor</h2>
+        <p>
+          窗口裁剪的最小实验：把上限调到 4，连续聊 5 轮，每轮打印
+          <code>chatMemory.get(conversationId).size()</code>。你会看到它稳定在 4 附近，
+          而不是无限增长。
+        </p>
+        <pre data-lang="java" data-file="窗口记忆">ChatMemory memory = MessageWindowChatMemory.builder()
+        .chatMemoryRepository(repository)
+        .maxMessages(4)
+        .build();
+
+// 新对话
+memory.clear(conversationId);</pre>
+        <pre data-lang="java" data-file="RequestIdAdvisor 的关键动作">public ChatClientRequest before(ChatClientRequest request, AdvisorChain chain) {
+    request.context().put("requestId", UUID.randomUUID().toString());
+    return request;
+}
+
+public ChatClientResponse after(ChatClientResponse response, AdvisorChain chain) {
+    log.info("requestId={}", response.context().get("requestId"));
+    return response;
+}</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li>裁剪发生在写入之后；保留条数按总消息数算，不是「保留几轮」。</li>
+          <li><code>clear(id)</code> 只清该会话；用 <code>userId + ":" + sessionId</code> 时，两个 session 的 key 必须不同。</li>
+          <li><code>AuditAdvisor</code> 的 order 改成 <code>MIN + 350</code> 后进入工具循环内侧，日志从「一次请求一条」变成「每轮循环一条」。</li>
+          <li>缓存 Advisor 用 <code>CallAdvisor</code>，命中时直接返回构造好的 <code>ChatClientResponse</code>，不调用 <code>chain.nextCall</code>。</li>
+          <li><code>request.context()</code> 是可变快照；<code>ThreadLocal</code> 在流式线程切换下不可靠。</li>
+        </ul>
+
+        <h2 id="ch07-08">第 07–08 章：RAG 与向量库</h2>
+        <p>
+          topK 的对比要同时记录三件事：回答是否正确、引用了几段、token 用了多少。
+          只看回答，容易把「多召回」误当成「更好」。
+        </p>
+        <pre data-lang="java" data-file="metadata 过滤">var b = new FilterExpressionBuilder();
+
+SearchRequest request = SearchRequest.builder()
+        .query(question)
+        .topK(4)
+        .similarityThreshold(0.5)
+        .filterExpression(b.eq("category", "refund").build())
+        .build();</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li><code>topK=1</code> 容易漏掉第二段答案；<code>topK=10</code> 可能把噪声和成本一起带进来。</li>
+          <li>过滤表达式先缩小范围，再算相似度；不要把租户/分类过滤放到提示词里让模型自己判断。</li>
+          <li>阈值调到 0.9 时「无法回答」变多，说明召回不足，不是模型变笨。</li>
+          <li><code>dimensions</code> 必须与 embedding 输出一致；开启 <code>schema-validation</code> 后，错误会在启动/写入时更早暴露。</li>
+          <li>HNSW 与 NONE 的差异用 <code>EXPLAIN ANALYZE</code> 看执行计划，不要凭感觉判断索引有没有生效。</li>
+        </ul>
+
+        <h2 id="ch09-10">第 09–10 章：高级检索与工具</h2>
+        <p>
+          租户隔离的最小做法：每条文档写 <code>tenant</code> metadata，每次检索都强制拼上
+          <code>tenant == 当前租户</code>，而不是让模型决定查哪个租户。
+        </p>
+        <pre data-lang="java" data-file="租户过滤">var b = new FilterExpressionBuilder();
+
+var filter = b.and(
+        b.eq("tenant", currentTenant),
+        b.eq("status", "published")).build();
+
+SearchRequest request = SearchRequest.builder()
+        .query(question)
+        .topK(4)
+        .filterExpression(filter)
+        .build();</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li>「那运费呢？」单独检索几乎召回不到东西；改写后应包含「运费政策」这类可检索词。</li>
+          <li><code>numberOfQueries</code> 从 3 调到 5 通常提高召回，也提高延迟与 token；默认多查询含原问题共 4 路。</li>
+          <li>工具描述写成「查询数据」，模型就不知道何时调用；描述要写清输入、输出与适用场景。</li>
+          <li><code>throw-exception-on-error=false</code> 时异常文本会回给模型；<code>true</code> 时直接中断调用。</li>
+          <li><code>ToolContext</code> 里的 <code>userId</code> / <code>tenantId</code> 来自服务端，不进入工具参数 schema，模型无法篡改。</li>
+        </ul>
+
+        <h2 id="ch11-12">第 11–12 章：MCP 客户端与服务端</h2>
+        <p>
+          MCP 客户端的第一道边界不是提示词，而是工具过滤。只暴露读工具，
+          模型再聪明也不会调到删除接口。
+        </p>
+        <pre data-lang="java" data-file="只暴露只读工具">@Bean
+McpToolFilter onlyReadOnlyTools() {
+    return (connection, tool) -&gt; !tool.name().startsWith("delete")
+            &amp;&amp; !tool.name().startsWith("write");
+}</pre>
+        <pre data-lang="java" data-file="MCP 服务端">@McpTool(description = "按订单号查询订单状态，只读")
+OrderView query(
+        @McpToolParam(description = "订单号，例如 SO-20261106-001") String orderNo) {
+    return this.orders.findViewByOrderNo(orderNo);
+}
+
+@McpResource(uri = "order://policy/refund", name = "退款政策")
+String refundPolicy() {
+    return Files.readString(Path.of("docs/refund-policy.md"));
+}</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li>filesystem server 的挂载目录必须限制在测试目录；工具清单就是它能触达的文件面。</li>
+          <li><code>request-timeout=2s</code> 只约束单次工具调用；慢工具的超时会以错误结果回到模型，不会拖垮整个进程。</li>
+          <li>Inspector 的 <code>tools/list</code> 验证「暴露了什么」，<code>tools/call</code> 验证「能不能执行」。</li>
+          <li>加 Spring Security 后，不带 Bearer Token 应得到 401；不要把 MCP 端点当成内网就免鉴权。</li>
+        </ul>
+
+        <h2 id="ch13-14">第 13–14 章：观测、测试与生产化</h2>
+        <p>
+          测试的关键不是「调不调模型」，而是「断言什么」。捕获最后一次 Prompt，
+          比断言整段自然语言稳定得多。
+        </p>
+        <pre data-lang="java" data-file="捕获提示词的测试替身">class CapturingChatModel extends StubChatModel {
+
+    Prompt lastPrompt;
+
+    CapturingChatModel(String reply) {
+        super(reply);
+    }
+
+    @Override
+    public ChatResponse call(Prompt prompt) {
+        this.lastPrompt = prompt;
+        return super.call(prompt);
+    }
+}
+
+// 断言 RAG 拼进去的上下文
+assertThat(model.lastPrompt.getContents())
+        .contains("退款政策");</pre>
+        <pre data-lang="yaml" data-file="在线服务重试">spring:
+  ai:
+    retry:
+      max-attempts: 3          # 重试 3 次，总共最多 4 次请求
+      backoff:
+        initial-interval: 500ms
+        multiplier: 2
+        max-interval: 5s
+      on-http-codes: [429]</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li>工具测试要覆盖正常参数、缺参数、类型错误三种；异常应按框架规则转成可读结果。</li>
+          <li>Testcontainers 集成测试只验证「add → search」这条确定性链路，不调用真实模型。</li>
+          <li><code>max-attempts</code> 是重试次数，不是总次数；3 次重试加首次共 4 次请求。</li>
+          <li>429 默认不重试；加 <code>on-http-codes: [429]</code> 后要同时缩短退避，否则延迟会比失败更难接受。</li>
+          <li><code>Flux.timeout(10s)</code> 是空闲超时；长回答持续有 chunk 时不会触发，总时长仍要靠 <code>take(...)</code>。</li>
+        </ul>
+
+        <h2 id="ch15-16">第 15–16 章：综合案例与评测</h2>
+        <p>
+          引用事件要在第一个 token 之前发出去。做法是先做一次检索，把文件名作为
+          <code>citations</code> 事件发出，再开始流式回答。
+        </p>
+        <pre data-lang="java" data-file="先发引用再发正文">List&lt;String&gt; citations = vectorStore.similaritySearch(
+                SearchRequest.builder().query(question).topK(4).build())
+        .stream()
+        .map(doc -&gt; doc.getMetadata().get("source").toString())
+        .distinct()
+        .toList();
+
+emitter.send(SseEmitter.event().name("citations").data(citations));
+
+chatClient.prompt()
+        .user(question)
+        .advisors(a -&gt; a.param(ChatMemory.CONVERSATION_ID, conversationId))
+        .stream()
+        .content()
+        .subscribe(chunk -&gt; send(emitter, "delta", chunk));</pre>
+        <p>
+          评测先算检索指标，再看生成指标。检索没召回，生成模型再强也只能编。
+        </p>
+        <pre data-lang="text" data-file="两个最小指标">recall@k = 命中的相关文档数 / 标注的相关文档总数
+hit rate@k = 至少命中一条相关文档的问题数 / 问题总数</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li>降级只在同步接口生效：流式一旦发出第一个 chunk，就不能无痕切换到另一个模型。</li>
+          <li>引用要持久化到消息或事件里，不能只放在日志；前端刷新后还要能拿到。</li>
+          <li>回归集四类样本：常规、同义改写、多轮追问、不该回答。</li>
+          <li><code>RelevancyEvaluator</code> 只给通过/不通过，别把它当连续分数；换 judge 模型后通过率变化大，说明样本或提示词不稳。</li>
+          <li>CI 分层：单元与检索指标每次跑，真实 judge 与真实模型按需跑。</li>
+        </ul>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          做完练习后，回到 <a href="../chapters/15-capstone.html">15 综合案例</a>
+          把示例换成你的业务；或者从 <a href="../chapters/16-evaluation.html">16 评测</a>
+          开始，为你的服务建第一套回归集。
+        </p>
+      </article>
+    </main>
+
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

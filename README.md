@@ -2,6 +2,8 @@
 
 这是学习站的源码仓库。站点本体在 [`spring-ai-learn/`](spring-ai-learn/)，可以直接当静态网站部署。
 
+**内容状态**：第 00–16 章 + 00A 信息流实验室 + 附录 A–F，共 24 页，对应站点版本 v1.4.0。
+
 - **本地看站**：双击 [`spring-ai-learn/index.html`](spring-ai-learn/index.html)，或在仓库根执行 `python -m http.server 8080` 后访问 <http://localhost:8080/spring-ai-learn/>
 - **部署**：见 [DEPLOY.md](DEPLOY.md)（GitHub Pages / Vercel / Netlify / 自建服务器）
 - **更新记录**：见 [CHANGELOG.md](CHANGELOG.md)
@@ -15,7 +17,7 @@ spring-ai-learn/           站点本体（发布时把这个目录作为站点�
 ├── 404.html               站内 404（自包含样式，任意深度可用）
 ├── robots.txt
 ├── chapters/              第 00–16 章 + 00A 信息流实验室
-├── appendix/              附录 A–E
+├── appendix/              附录 A–F
 └── assets/                base.css / site.js / nav.js / search-index.js / flow-demo.* / favicon.svg
 
 tools/                     零依赖 Node 脚本
