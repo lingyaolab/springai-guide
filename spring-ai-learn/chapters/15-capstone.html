@@ -41,6 +41,103 @@
           <li>用一份配置和一个 compose 文件把服务跑起来</li>
         </ul>
 
+        <h2 id="why">先说为什么：综合案例不是把所有组件都接上</h2>
+        <p>
+          这一章最容易犯的错，是照着「完整架构图」一次把向量库、记忆、工具、流式、降级全接上。
+          结果任何一个环节出问题，你都分不清是检索、提示词还是模型。正确顺序是
+          <strong>先跑最小闭环，再按失败现象加层</strong>。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>能力</th>
+                <th>先跑什么</th>
+                <th>什么时候才加</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>RAG</td>
+                <td>ChatClient 直接回答</td>
+                <td>模型答不出内部事实，且你能举出 3 个具体问题</td>
+              </tr>
+              <tr>
+                <td>工具</td>
+                <td>把订单状态放进上下文</td>
+                <td>数据会变，必须实时查询</td>
+              </tr>
+              <tr>
+                <td>记忆</td>
+                <td>单轮问答</td>
+                <td>用户开始说「刚才那个」「还是上次的」</td>
+              </tr>
+              <tr>
+                <td>流式</td>
+                <td>同步返回</td>
+                <td>首字延迟已经影响体验</td>
+              </tr>
+              <tr>
+                <td>降级</td>
+                <td>单模型</td>
+                <td>你已经有第二个可用 provider 与回退话术</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          下面的章节按这个顺序展开：先看整体链路，再逐段实现；每一段都能单独验收。
+        </p>
+
+        <h2 id="minimal">最小可跑：先跑通一条问答闭环</h2>
+        <p>
+          不要从最后的 <code>ChatConfig</code> 开始。先按里程碑推进，每一步只加一个变量：
+        </p>
+        <div class="steps">
+          <li>
+            <span class="sh">M1 同步问答</span>
+            <div>
+              一个 Boot 工程 + DeepSeek 配置，用
+              <code>ChatClient.prompt().user(...).call().content()</code> 拿到回答。
+              验收：不接向量库也能回答。
+            </div>
+          </li>
+          <li>
+            <span class="sh">M2 入库 + 检索</span>
+            <div>
+              起 pgvector，导入 3 份 Markdown，用 <code>QuestionAnswerAdvisor</code>
+              回答一个只有文档里才有答案的问题。验收：回答里出现正确来源。
+            </div>
+          </li>
+          <li>
+            <span class="sh">M3 记忆 + 工具</span>
+            <div>
+              加 <code>MessageChatMemoryAdvisor</code> 与订单工具。验收：第二轮能记住上一轮；
+              工具能按登录用户查到订单。
+            </div>
+          </li>
+          <li>
+            <span class="sh">M4 流式 + 引用</span>
+            <div>
+              改成 <code>.stream().content()</code>，用 <code>SseEmitter</code> 推事件。
+              验收：首字能出来，取消后上游请求停止。
+            </div>
+          </li>
+          <li>
+            <span class="sh">M5 降级 + 评测</span>
+            <div>
+              加第二模型与回归集。验收：主模型 429 时有回退，改提示词前后有指标对比。
+            </div>
+          </li>
+        </div>
+        <div class="callout tip">
+          <span class="ct">每一步都保留上一版的验收</span>
+          <p>
+            M2 通过后再加 M3；如果 M3 让 M2 的问题变差，先怀疑记忆或工具结果污染了上下文，
+            而不是直接调 RAG 参数。
+          </p>
+        </div>
+
         <h2 id="arch">架构：两条链路，五个组件</h2>
         <div class="stack">
           <div class="layer accent">

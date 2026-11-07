@@ -66,6 +66,34 @@
           </div>
         </div>
 
+        <h2 id="minimal">最小可跑：给 ChatClient 加一个日志 Advisor</h2>
+        <p>
+          先把一个 Advisor 跑起来，再研究它排在哪。Spring AI 自带
+          <code>SimpleLoggerAdvisor</code>，不需要写代码：
+        </p>
+        <pre data-lang="java" data-file="最小 Advisor">ChatClient chatClient = ChatClient.builder(chatModel)
+        .defaultAdvisors(new SimpleLoggerAdvisor())
+        .build();
+
+String answer = chatClient.prompt()
+        .user("用一句话解释 Advisor")
+        .call()
+        .content();</pre>
+        <p>
+          默认日志级别是 DEBUG，所以要打开
+          <code>logging.level.org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor=DEBUG</code>
+          才能看到请求与响应。看到日志后，再改一个参数观察顺序：
+        </p>
+        <pre data-lang="java" data-file="换一个 order">new SimpleLoggerAdvisor(Advisor.DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER + 50)</pre>
+        <p>
+          把它放到记忆之后、工具之前，日志就从「每次模型调用一条」变成「整轮对话一条」。
+          这就是下一节 <code>order</code> 要解释的事。
+        </p>
+        <p class="src-line">
+          默认 order 与两个构造器<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/SimpleLoggerAdvisor.java:57">SimpleLoggerAdvisor.java:57</span>；
+          DEBUG 门控<span class="src" data-src="spring-ai-client-chat/src/main/java/org/springframework/ai/chat/client/advisor/SimpleLoggerAdvisor.java:93">SimpleLoggerAdvisor.java:93</span>。
+        </p>
+
         <h2 id="chain">order：数值越小越靠外</h2>
         <p>
           <code>Advisor</code> 继承 <code>Ordered</code>，链在构建时用 <code>OrderComparator.sort</code> 升序排列。
